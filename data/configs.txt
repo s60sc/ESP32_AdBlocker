@@ -1,1 +1,29 @@
-
+appId~ESP32_AdBlocker~99~T~na
+restart~~99~T~na
+ST_SSID~~0~T~Wifi SSID name
+ST_Pass~~0~T~Wifi SSID password
+ST_ip~~0~T~Static IP address
+ST_gw~~0~T~Router IP address
+ST_sn~255.255.255.0~0~T~Router subnet
+ST_ns1~~0~T~DNS server
+ST_ns2~~0~T~Alt DNS server
+AP_SSID~~0~T~AP SSID name
+AP_Pass~~0~T~AP Password
+AP_ip~~0~T~AP IP Address if not 192.168.4.1
+AP_sn~~0~T~AP subnet
+AP_gw~~0~T~AP gateway
+allowAP~2~0~C~Allow simultaneous AP
+Auth_Name~~0~T~Optional user name for web page login
+Auth_Pass~~0~T~Optional user name for web page password
+hostName~~0~T~Device host name
+wifiTimeoutSecs~30~0~N~WiFi connect timeout (secs)
+formatIfMountFailed~0~1~C~Format file system on failure
+allowSpaces~0~1~C~Allow whitespace in configs.txt
+updateHour~4~1~N~Hour of day for blocklist update
+maxDomains~150~1~N~Max number of domains (* 1000)
+minMemory~128~1~N~Minimum free memory (KB)
+maxDomLen~100~1~N~Max length of domain name
+allowCnt~0~2~D~Allowed domains
+blockCnt~0~2~D~Blocked domains
+fileURL~https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts~2~T~URL for blocklist file
+loadProg~0~2~D~Blocklist download progress

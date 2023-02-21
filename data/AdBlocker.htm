@@ -1,0 +1,977 @@
+
+<!DOCTYPE html>   
+<!-- 
+  s60sc 2022 
+-->     
+<html>     
+  <head>
+    <meta charset="UTF-8"/>  
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>ESP32_AdBlocker</title>
+    <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="80" font-size="80">⛔</text></svg>'>
+    
+    <style>
+      :root {
+        /* colors used on web pages - see https://www.w3schools.com/colors/colors_names.asp */
+        --buttonReady: silver;
+        --buttonActive: #A0A0A0; /* mid gray */
+        --buttonHover: #D0D0D0; /* light gray */
+        --buttonText: white;
+        --buttonLabel: black;
+        --itemInactive: #E0E0E0; /* very light gray */
+        --menuBackground: silver;
+        --inputText: navy;
+        --pageText: black; 
+        --inputBackground: WhiteSmoke; 
+        --alertMsg: red;                         
+        --itemBorder: silver; 
+        --pageBackground: white;
+        
+        /* element sizes */
+        --bodySize:1rem; /* used as basis for element, padding, and font sizes */
+        --buttonSize: var(--bodySize);
+        --buttonHalf: calc(var(--buttonSize) / 2);
+        --buttonQuart: calc(var(--buttonSize) / 4);
+        --buttonDbl: calc(var(--buttonSize) * 2);
+        --inputSize: calc(var(--bodySize) * 0.9);
+        --headingSize: calc(var(--bodySize) * 1.25);
+        --subheadingSize: var(--bodySize);
+        --footerSize: calc(var(--bodySize) * 0.7);   
+      }
+
+      body {
+        font-family: Helvetica  !important;
+        background: var(--pageBackground);
+        color: var(--pageText);
+        font-size: var(--bodySize);      
+      }
+      
+      .hidden {
+        display: none
+      }
+      
+      progress {
+        accent-color: var(--buttonActive); 
+        width: calc(var(--buttonSize) * 15);
+      }
+      
+      .fixed {
+        position: fixed;
+        top: 0;
+      }
+
+      .alertMsg {
+        left:10%;
+        bottom: var(--buttonDbl);
+        position:absolute;
+        display:block;
+        color:var(--alertMsg);
+        z-index:20;
+        height: var(--buttonDbl);
+      }
+    
+      .header {
+        font-size: var(--headingSize);
+        padding-left: var(--buttonHalf);
+        font-weight:bold;
+      }
+      
+      .subheader {
+        font-style: italic;
+        font-size: var(--subheadingSize);
+        padding-left: var(--buttonQuart);
+      }          
+    
+      .tab {
+        display: flex;
+        overflow: hidden;
+        background: var(--menuBackground);
+      }
+
+      .tab button {
+        background: var(--buttonReady);
+        float: left;
+        border: none;
+        outline: none;
+        cursor: pointer;
+        padding: var(--buttonHalf);
+        transition: 0.3s;
+        font-size: calc(var(--buttonSize) * 1.1);
+      }
+
+      .tab button.active {
+        box-shadow: 0 0 0 var(--buttonQuart)  var(--buttonActive);
+        background: var(--buttonActive);
+      }
+      
+      .tab button.hover {
+        background: var(--buttonHover);
+      }
+
+      .tabcontent {
+        display: none;
+      }
+
+      .grid-cols3 {
+        grid-template-columns: calc(var(--buttonSize) * 12) calc(var(--buttonSize) * 12) calc(var(--buttonSize) * 12);
+        display: grid;
+        background: none;
+        text-align: center;
+        font-size: calc(var(--buttonSize) * 1.5);
+        fill: var(--buttonText);  
+        border: 0px solid var(--itemBorder);
+        dominant-baseline: middle;
+        text-anchor: middle;
+      }
+      
+      .cfgTitle {
+        grid-column: 1/5;
+        text-align: left;
+      }
+      rect {
+        fill: var(--buttonReady);
+        width: 100%;
+        height: 100%; 
+        x: 0;
+        y: 0;
+        ry: 15%;
+      }
+       
+      rect:active {
+        fill: var(--buttonActive);
+      }
+      
+      rect:hover {
+        fill: var(--buttonHover);
+      }
+    
+      text {
+      /*  font-size: var(--buttonSize); 
+        fill: var(--buttonText); 
+        transform: translate(50%,50%);  */
+        pointer-events: none;
+      }
+      
+      .panel {
+        padding: 0 var(--buttonSize);
+        display: none;
+        background-color: var(--pageBackground);
+        overflow: hidden;
+      }
+      
+      input, #applog  {
+        font: var(--inputSize) 'Courier New';
+        font-weight:bold;
+        color: var(--inputText);
+        background: var(--inputBackground);
+        min-width: calc(var(--buttonSize) * 10);     
+      }
+
+      input[type="text"]{
+        font-size: var(--inputSize); 
+        width: calc(var(--buttonSize) * 6);
+      }
+      
+      input[type="number"]:not(.configItem), input[type="time"] {
+        font-size: var(--buttonDbl);
+        border: 1px solid var(--itemBorder);
+        margin-bottom: var(--buttonQuart);
+        min-width: calc(var(--buttonSize) * 7);
+        text-align: center;
+      } 
+      
+      input[type=number]::-webkit-inner-spin-button {
+        opacity: 1
+      }
+      
+      /* checkbox toggle switch slider */
+            
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: calc(var(--buttonSize) * 2);
+        height: var(--buttonSize);
+        top: var(--buttonHalf);
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .slider {
+        position: absolute;
+        border-radius: var(--buttonSize);
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: var(--itemInactive);
+        width: calc(var(--buttonSize) * 3);                 
+        transition: .4s;
+      }
+
+      .slider:before {
+        position: absolute;
+        border-radius: 50%;
+        content: "";
+        height: var(--buttonSize);
+        width: var(--buttonSize);
+        left: var(--buttonQuart);
+        background: var(--inputBackground);
+        transition: .4s;
+      }
+
+      input:checked + .slider {
+        background-color: var(--buttonActive);
+      }
+
+      input:checked + .slider:before {
+        transform: translateX(calc(var(--buttonSize)*1.5));
+      }
+      
+      #applog {
+        height:90%;
+        width:90%;
+        border:2px solid var(--itemBorder);
+        overflow:auto;
+        background: var(--inputBackground);                 
+      }
+      
+      select {
+        border: 1px solid var(--menuBackground);
+        font-size: var(--inputSize);
+        outline: 0;
+        border-radius: var(--buttonQuart);
+        margin-top: 2px;
+      }
+      
+      .selectField {
+         height: calc(var(--inputSize) * 1.5);
+      }
+      
+      table {
+        border-collapse:collapse; 
+        table-layout:fixed;
+        background: var(--menuBackground);
+        text-align: left;
+      }
+      
+      th {
+        font-weight:bold; 
+      }
+      
+      .config-group th, .config-group td {
+        border: 0;
+        padding: var(--buttonHalf) var(--buttonHalf) 0 var(--buttonHalf); 
+        padding-left: var(--buttonSize);
+        line-height: var(--buttonDbl);
+        font-size: var(--buttonSize);
+      } 
+      
+      .svgCols {
+        width: calc(var(--buttonSize) * 9);  
+        height: calc(var(--buttonSize) * 2.5);  
+        fill: var(--buttonLabel);
+        font-size: calc(var(--buttonSize) * 1.5);
+      }   
+      
+      .upperText {
+        transform: translate(50%,30%);  
+      }
+      
+      .lowerText {
+        transform: translate(50%,70%);  
+      }
+      
+      .midText {
+        transform: translate(50%,50%); 
+      }
+      
+    </style>
+  </head>
+  <body>
+    <div class="tab fixed">
+      <button class="tablinks active" name="AdBlocker" id="mainTab">AdBlocker</button>
+      <button class="tablinks" name="ShowLog">Show Log</button>
+      <button class="tablinks" name="EditConfig">Edit Config</button>
+      <button class="tablinks" name="OTAUpload">OTA Upload</button>
+    </div>
+    <br><br><br>
+    <div id="AdBlocker" class="tabcontent" style="display:block">
+      <div class="grid-cols3">
+        <svg class="svgCols">
+          <rect/>
+          <text id="reload" class="midText">Reload</text>
+        </svg>
+      </div>
+      <div>
+        <p class='config-group' id="Mon012"></p>
+      </div>
+    </div>
+    
+    <div id="ShowLog" class="tabcontent">
+      <br>
+      <div class="grid-cols3">
+         <div class="input-group" style="text-align: left">
+          <label for="wsMode" class="header" title="Enable logging to websocket">Logging:</label>
+          <div class="switch">
+              <input class="local" id="wsMode" type="checkbox">
+              <label title="Output log to WS" class="slider" for="wsMode"></label>
+          </div>   
+        </div>
+        <div class="input-group" id="dbg-group" style="text-align: left">
+          <label for="dbgVerbose" class="header" title="Set verbose logging">Verbose:</label>
+          <div class="switch">
+            <input id="dbgVerbose" type="checkbox">
+            <label title="Outputs additional information to log" class="slider" for="dbgVerbose"></label>
+          </div>
+        </div>
+        <div>
+          <svg class="svgCols">
+            <rect/>
+            <text id="clearWSlog" class="midText">Clear Log</text>
+          </svg>
+        </div>
+      </div>
+      <br>
+      <pre id='applog' style="height:50vh;"></pre>
+    </div>
+    
+    <div id="EditConfig" class="tabcontent">
+      <br>
+      <div class="header">Control</div>
+      <br>
+      <div class="grid-cols3">
+        <div>
+          <svg class="svgCols">
+            <rect/>
+            <text id="reset" class="midText">Reboot ESP</text>
+          </svg>
+        </div>
+        <div>
+          <svg class="svgCols">
+            <rect/>
+            <text id="deldata" class="midText">Reload /data</text>
+          </svg>
+        </div>
+        <div>
+          <svg class="svgCols">
+            <rect/>
+            <text id="clear" class="midText">Clear NVS</text>
+          </svg>
+        </div>
+        <div class="cfgTitle">
+          <br>
+          <div class="header">Settings</div>
+          <div class="subheader">Press a button to view or modify settings (changed values are not validated)</div>
+          <div class="subheader">Press Save button to make changes permanent</div>
+          <br>
+        </div>
+        <div>
+          <svg class="svgCols">
+            <rect/>
+            <text id="wifi" class="midText">Wifi</text>
+          </svg>
+        </div>
+        <div>
+          <svg class="svgCols">
+            <rect/>
+            <text id="settings" class="midText">Settings</text>
+          </svg>
+        </div>
+        <div>
+          <svg class="svgCols">
+            <rect/>
+      	    <text id="save" class="midText">Save</text>
+          </svg>
+        </div>
+      </div>
+      <div>
+        <p class='config-group' id='Cfg'></p>
+      </div>
+    </div>
+           
+    <div id="OTAUpload" class="tabcontent">
+      <br><br>
+      <form id="upload_form" enctype="multipart/form-data" method="post">
+        <input class="local" type="file" name="otafile" id="otafile">
+        <br><br>
+        <progress id="progressOta" value="0" max="100" ></progress>%
+        <div class="subheader" id="status"></div>
+        <p id="loaded_n_total"></p>
+      </form>
+    </div>
+        
+    <div class="alertMsg">
+      <span id="alertText"></span>
+    </div>
+    
+    <script>
+      document.addEventListener('DOMContentLoaded', function (event) {
+        'use strict'
+
+        /*********** initialisation ***********/
+        
+        const baseHost = document.location.origin;
+        const wsServer = "ws://" + document.location.host + ":80/ws";
+        let refreshInterval = 5000;
+        let ws = null;
+        let hbTimer = null;
+        let updateData = {}; // receives json for status data as key val pairs
+        let statusData = {}; // stores all status data as key val pair
+        let cfgGroupNow = -1;
+        let loggingOn = false;
+        const CLASS = 0;
+        const ID = 1;
+        const $ = document.querySelector.bind(document);
+        const $$ = document.querySelectorAll.bind(document);
+        const baseFontSize = parseInt(window.getComputedStyle($('body')).fontSize);
+
+        initialise();
+        
+        function initialise() {
+          try {
+            //addButtons();       
+            //addRangeData();
+            setListeners();
+            //initWebSocket();
+            //loadStatus(""); 
+            getConfig('012');
+            if (hbTimer == null) setTimeout(refreshStatus, refreshInterval);
+          } catch (error) {
+            showLog("Error: " + error.message);
+            alert("Error: " + error.message);
+          } 
+        }     
+      
+        /*********** websocket functions ***********/
+        
+        // define websocket handling
+        function initWebSocket() {
+          loggingOn = true;
+          showLog("Connect to: " + wsServer);
+          ws = new WebSocket(wsServer);
+          ws.onopen = onOpen;
+          ws.onclose = onClose;
+          ws.onmessage = onMessage; 
+          ws.onerror = onError;
+        }
+      
+        // periodically check that connection is still up and get status
+        function heartbeat() {
+          if (!ws) return;
+          if (ws.readyState !== 1) return;
+          sendCmd("H");
+          clearTimeout(hbTimer);
+          hbTimer = setTimeout(heartbeat, refreshInterval);     
+        }
+      
+        // connect to websocket server
+        function onOpen(event) {
+          showLog("Connected");
+          //heartbeat();
+        }
+      
+        // process received WS message
+        function onMessage(messageEvent) {    
+          if (messageEvent.data.startsWith("{")) {
+            // json data
+            updateData = JSON.parse(messageEvent.data);
+            let filter = updateData.cfgGroup;
+            delete updateData.cfgGroup;
+            if (filter == "-1")  updateStatus(); // status update
+            else buildTable(updateData, filter); // format received config json into html table
+          } else showLog(messageEvent.data, false);
+        }
+        
+        function onError(event) {
+          showLog("WS Error: " + event.code);
+        }
+      
+        function onClose(event) {
+          showLog("Disconnected: " + event.code + ' - ' + event.reason);
+          loggingOn = false;
+          ws = null;
+          // event.codes:
+          //   1006 if server not available, or another web page is already open
+          //   1005 if closed from app
+          if (event.code == 1006) {} //alert("Closed websocket as a newer connection was made, refresh browser page");
+          else if (event.code != 1005) initWebSocket(); // retry if any other reason
+        }
+      
+        async function closeWS() {
+          ws.send('K');
+          await sleep(500);
+          if (ws != null) ws.close();
+        }
+        
+        /*********** page layout functions ***********/
+    
+        function openTab(e) {
+          // control tab viewing
+          $$('.tabcontent').forEach(el => {el.style.display = "none";});
+          $('#' + e.name).style.display = "inherit";
+          $$('.tablinks').forEach(el => {el.classList.remove("active");});
+          e.classList.add("active");
+          try {
+            if (e.name == 'mainPage') show($('#main'));
+            else hide($('#main'));
+          } catch {}                   
+        }
+
+        function accordian(accId) {
+          // accordian buttons to show / hide elements
+          let panel = $('#' + accId);
+          if (panel.style.display === "inherit") panel.style.display = "none";
+          else panel.style.display = "inherit";
+        }
+
+         function rangeSlider(el, isPos = true, statusVal = null) {
+          // update range slider marker position and value 
+          const rangeVal = el.parentElement.children.rangeVal;
+          if (statusVal != null) rangeVal.innerHTML = statusVal;
+          const currVal = isPos ? parseFloat(el.value) : parseFloat(rangeVal.innerHTML);
+          const minval = parseFloat(el.min);
+          const maxval = parseFloat(el.max);
+          const decPlaces = (el.step > 0 && el.step < 1) || el.step == 'any' ? 1 : 0;
+          if (el.classList.contains('logslider')) {
+            // range value is logarithmic
+            const minlog = Math.log(minval);
+            const maxlog = Math.log(maxval) ;
+            const scale = (maxlog - minlog) / (maxval - minval);
+            // if isPos then get value from slider positional change by user, else set slider position from initial value.
+            if (isPos) rangeVal.innerHTML = Math.exp((currVal - minval) * scale + minlog).toFixed(decPlaces);
+            else el.value = minval + ((currVal == 0 ? 0 : Math.log(currVal)) - minlog) / scale; 
+          } else rangeVal.innerHTML = parseFloat(el.value).toFixed(decPlaces);
+          
+          // position for range marker
+          const rangeFontSize = parseInt(window.getComputedStyle($('input[type=range]')).fontSize); 
+          let position = (el.clientWidth - rangeFontSize) * (el.value - minval) / (maxval - minval); 
+          position += el.offsetLeft + (rangeFontSize / 2);
+          rangeVal.style.left = 'calc('+position+'px)';
+        }
+        
+        let observer = new IntersectionObserver ( function(entries) {
+          // recalc each range slider that becomes visible
+            entries.forEach(el => { if (el.isIntersecting === true) rangeSlider(el['target']); });
+          }, { threshold: [0] }
+        );
+        $$('input[type=range]').forEach(el => { observer.observe(el); });
+        
+        function addButtons() {
+          // add commmon buttons to relevant sections
+          $$('.addButtons').forEach(el => {
+            el.innerHTML = '<section id="buttons">'
+              +'<button id="save" style="float:right;" value="1">Save Settings</button>'
+              +'<button id="reset" style="float:right;" value="1">Reboot ESP</button>'
+            +'</section><br>'
+          });
+        }
+        
+        function addRangeData() {
+          // add labelling for rangle sliders
+          $$('input[type="range"]').forEach(el => {
+            if (!isDefined(el.parentElement.children.rangeMin)) el.insertAdjacentHTML("beforebegin", '<div name="rangeMin"/>'+el.min+'</div>');
+            el.insertAdjacentHTML("afterend", '<div name="rangeVal">'+el.value+'</div>');
+            if (!isDefined(el.parentElement.children.rangeMax)) el.insertAdjacentHTML("afterend", '<div name="rangeMax"/>'+el.max+'</div>');
+            rangeSlider(el, false);
+          });
+        }
+            
+       /*********** data processing functions ***********/
+      
+        async function loadStatus(specifier) {
+          // request and load current status from app
+          const response = await fetch(baseHost+'/status'+specifier);
+          if (response.ok) {
+            updateData = await response.json();
+            updateStatus();
+            await sleep(1000);
+          } else console.log(response.status); 
+        }
+      
+        function refreshStatus() {
+          // refresh status at required interval
+          clearTimeout(hbTimer);
+          //loadStatus("?q");
+          if (isActive($('#mainTab'))) {
+            sendControl('counts', 1);
+            getConfig('012');
+          }
+          hbTimer = setTimeout(refreshStatus, refreshInterval);
+        }
+        
+        function updateStatus() {
+          // replace each existing value with new received value, using key name to match html tag id
+          Object.entries(updateData).forEach(([key, value]) => {
+            let elt = $('text#'+key); // svg button
+            let eld = $('div#'+key); // display text
+            let eli = $('#'+key); // input field
+            if (elt) elt.textContent = value; 
+            else if (eld) {if (eld.classList.contains('displayonly')) eld.innerHTML = value;} // display text 
+            else if (eli != null) { // input fields
+              if (eli.type === 'checkbox') eli.checked = !!Number(value);
+              else if (eli.type === 'range') rangeSlider(eli, false, value); 
+              else if (eli.type === 'option') eli.selected = true;
+              else eli.value = value; 
+            }
+            statusData[key] = value;
+            processStatus(ID, key, value, false);
+          });
+        }
+        
+        async function sendUpdates(doAction) {    
+          // send bulk updates to app as json 
+          statusData['action'] = doAction;
+          const response = await fetch(baseHost + '/update', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(statusData),
+          });
+          if (!response.ok) console.log(response.status);
+        }
+        
+        /*********** utility functions ***********/
+        
+        function debounce(func, timeout = 500){
+          // debounce rapid clicks to prevent unnecessary fetches
+          let timer;
+          return (...args) => {
+            clearTimeout(timer);
+            timer = setTimeout(() => { func.apply(this, args); }, timeout);
+          };
+        }
+        
+        const debounceSendControl = debounce((key, value) => sendControl(key, value));
+        
+        function sleep(ms) {
+          return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        
+        function hide(el) {
+          el.classList.add('hidden')
+          el.style.display = "none";
+        }
+        
+        function show(el) {
+          el.classList.remove('hidden')
+          el.style.display = "";
+        }
+
+        function disable(el) {
+          el.classList.add('disabled');
+          el.disabled = true;
+        }
+
+        function enable(el) {
+          el.classList.remove('disabled');
+          el.disabled = false;
+        }
+        
+        function isActive(key) {
+          return key.classList.contains('active') ? true : false;
+        }
+      
+        function isDefined(variable) {
+          return (typeof variable === 'undefined' || variable === null ) ? false : true;
+        }
+
+        async function showAlert(value) {
+          $('#alertText').innerHTML = value;
+          await sleep(5000);
+          $('#alertText').innerHTML = "";
+        }
+
+        async function applyChanges() {
+          sendControl('save', 1);
+          await sleep(1000);
+          sendControl('reset', 1);
+        }
+        
+        function dbg(msg) {
+          console.log('***** '+msg);
+        }
+        
+        /*********** command processing ***********/
+      
+       function setListeners() {
+        
+         // click events
+         document.addEventListener("click", function (event) {
+            const e = event.target;
+            // svg rect elements, use id of its following text node
+            if (e.nodeName == 'rect') processStatus(ID, e.nextElementSibling.id, 1);
+            // tab buttons, use name as target id 
+            else if (e.classList.contains('tablinks')) openTab(e);
+            // other buttons
+            else if (e.tagName == 'BUTTON') processStatus(ID, e.id, e.value);
+            // navigation and presentation icons
+            else if (e.tagName == 'NAV' || e.tagName == 'DIV') processStatus(CLASS, e.classList.value, e.id);
+            else if (e.nodeName == 'INPUT' || e.nodeName == 'SELECT') {/*ignore*/}
+          });
+          
+          // change events
+          document.addEventListener("change", function (event) {
+            const e = event.target;
+            const value = e.value.trim();
+            const et = event.target.type;
+            // input fields of given class
+            if (e.nodeName == 'INPUT') {
+              if (e.type === 'checkbox') processStatus(ID, e.id, e.checked ? 1 : 0);
+              else if (et === 'button' || et === 'file') processStatus(ID, e.id, 1);
+              else if (et === 'radio') { if (e.checked) processStatus(ID, e.name, value); } 
+              else if (e.hasAttribute('id')) processStatus(ID, e.id, value);
+            }
+            else if (e.tagName == 'SELECT') processStatus(ID, e.id, value);
+          });
+          
+          // input events
+          document.addEventListener("input", function (event) {
+            if (event.target.type === 'range') rangeSlider(event.target);
+          });
+          
+          // user command entered on Log tab
+          document.addEventListener("keydown", function (event) {
+            if (event.target.id == 'txtCmd') {
+              let keyPress = event.keyCode || event.which;
+              if (keyPress == 13) sendWsCmd();
+            }
+          });
+          
+          // recalc range marker positions 
+          window.addEventListener('resize', function (event) {
+            $$('input[type=range]').forEach(el => { rangeSlider(el); });
+          });
+          
+          // close web socket on leaving page
+          window.addEventListener('beforeunload', function (event) {
+            if (ws) closeWS();
+          });
+          
+        }
+      
+        function sendWsCmd() {
+          // send user command to websocket server
+          let txt = $('#txtCmd');
+          let line = txt.value;
+          if (line != "" && ws !== undefined) {
+            sendCmd(line);
+            txt.value = "";
+            txt.focus();
+          } else showLog("No command or no connection");
+        }
+        
+        function sendCmd(reqStr) {
+          ws.send(reqStr);
+          showLog("Cmd: " + reqStr);
+        }
+        
+        function showLog(reqStr, fromUser = true) {
+          if (loggingOn) {
+            let date = new Date();
+            // add timestamp to received text if generated by browser
+            let logText = fromUser ? "[" + date.toLocaleTimeString() + " Web] " : "";
+            logText += reqStr + "\n";
+            // append to log display 
+            let log = $('#applog');
+            let new_node = document.createTextNode(logText);
+            log.append(new_node);
+            // auto scroll new entry unless scroll bar is not at bottom
+            const bottom = 2 * baseFontSize;// 2 lines
+            const pos = Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop);
+            if (pos < bottom) log.scrollTop = log.scrollHeight;
+          }
+        }
+      
+        function sendWsUpdates(doAction) {    
+          // get each required update element and obtain id/name and value into array to send as json 
+          let jarray = {};
+          jarray["action"] = doAction;
+          $$('.update-action').forEach(el => {
+            if (el.nodeName == "INPUT") jarray[el.getAttribute('id')] = el.value.trim();
+          });
+          sendCmd('U' + JSON.stringify(jarray));
+        }
+        
+        async function sendControl(key, value) {
+          // send only  
+          if (value != null) {
+            const response = await fetch(encodeURI(baseHost + "/control?" + key + "=" + value));
+            if (!response.ok) console.log(response.status);
+          }
+        }
+        
+        async function sendControlResp(key, value) {
+          // send and apply response
+          const response = await fetch(encodeURI(baseHost + "/control?" + key + "=" + value));
+          if (response.ok) {
+            updateData = await response.json();
+            updateStatus();
+          } else console.log(response.status); 
+        }
+        
+        /*********** config functions ***********/
+        
+        async function getConfig(cfgGroup) {
+          // request config json for selected group
+          const response = await fetch('/status?123456789' + cfgGroup);
+          if (response.ok) {
+            const configData = await response.json();
+            // format received json into html table
+            buildTable(configData, cfgGroup);
+          } else console.log(response.status); 
+        }
+        
+        function buildTable(configData, cfgGroup) {
+          // dynamically build table of editable settings
+          const divShowData = isDefined($('.config-group#Mon'+cfgGroup)) ? $('.config-group#Mon'+cfgGroup) : $('.config-group#Cfg');
+          const retain = divShowData.id == 'Mon'+cfgGroup ? true : false;
+          divShowData.innerHTML = "";
+          if (cfgGroupNow != cfgGroup || retain) {
+            cfgGroupNow = cfgGroup;
+            const table = document.createElement("table"); 
+            // Create table header row from heading names
+            const colHeaders = ['Setting Name', 'Setting Value']; 
+            let tr = table.insertRow(-1); 
+            for (let i = 0; i < colHeaders.length; i++) {
+              let th = document.createElement("th");    
+              th.innerHTML = colHeaders[i];
+              tr.appendChild(th);
+            }
+
+           // add each setting as a row containing setting label and setting value
+            let nextPair = 3;
+            let saveKey, saveVal;
+            Object.entries(configData).forEach(([key, value]) => {
+              if (key != "cfgGroup") { // skip over this entry 
+                if (nextPair == 3) {
+                  // new row
+                  tr = table.insertRow(-1);
+                  nextPair = 0;
+                }
+                if (nextPair == 0) {
+                  // save key and value
+                  saveKey = key;
+                  saveVal = value;
+                  nextPair = 1;
+                } else if (nextPair == 1) {
+                  // insert label for setting
+                  tr.insertCell(-1).innerHTML = value; 
+                  nextPair = 2;
+                } else {
+                  // get input field type and build html
+                  let inputHtml;
+                  switch (value.charAt(0)) {
+                    case 'T':
+                      inputHtml = '<input type="text" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" >';
+                    break;
+                    case 'N':
+                      inputHtml = '<input type="number" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" >';
+                    break;
+                    case 'S': 
+                      // build drop down select
+                      inputHtml = '<select id="' + saveKey + '" class="selectField">';
+                      value.substring(2).split(":").forEach(opt => {
+                        inputHtml += '<option value="' + opt + '" ' + (saveVal == opt ? 'selected="selected"' : '') + '>' + opt + '</option>';
+                      });
+                      inputHtml += '</select>';
+                    break;
+                    case 'C':
+                      // format checkbox as slider
+                      inputHtml = '<div class="switch"><input type="checkbox" class="configItem" id="' + saveKey;
+                      inputHtml += '" value="'+ saveVal +'"' + (saveVal == 1 ? ' checked' : '') + '>';
+                      inputHtml += '<label class="slider" for="' + saveKey + '"></label></div>';
+                    break;
+                    case 'D': // display only
+                      inputHtml = '<input type="text" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" readonly>';
+                    break;
+                    case 'R': // R:min:max:step
+                      // format number as range slider 
+                      const range = value.substring(2).split(":");
+                      inputHtml = '<div class="input-group">';
+                      inputHtml += '<input type="range" id="' + saveKey + '" min="' + range[0] + '" max="' + range[1];
+                      inputHtml += '" step="' + range[2] + '" value="' + saveVal + '"><div name="rangeVal">' + saveVal + '</div></div>';
+                    break;
+                    default:
+                      console.log("Unhandled config input type " + value);
+                    break;
+                  }
+                  tr.insertCell(-1).innerHTML = inputHtml;
+                  nextPair = 3;
+                }
+              }
+            })
+            // add the newly created table at placeholder
+            divShowData.appendChild(table);
+          } else cfgGroupNow = -1;
+        }
+
+        /*********** OTA functions ***********/
+         
+        async function otaUploadFile() {
+          // notify server to start ota task
+          const response = await fetch('/control?startOTA=1');
+          if (response.ok) {
+            // submit file for uploading
+            let file = $("#otafile").files[0];
+            let formdata = new FormData();
+            formdata.append("otafile", file);
+            let ajax = new XMLHttpRequest();
+            ajax.upload.addEventListener("progress", progressHandler, false);
+            ajax.addEventListener("load", completeHandler, false);
+            ajax.addEventListener("error", errorHandler, false);
+            ajax.addEventListener("abort", abortHandler, false);
+            ajax.open("POST", baseHost + ':82/upload');
+            ajax.send(formdata);
+          } else console.log(response.status); 
+        }
+
+        function progressHandler(event) {
+          $("#loaded_n_total").innerHTML = "Uploaded " + event.loaded + " of " + event.total + " bytes";
+          let percent = (event.loaded / event.total) * 100;
+          $("#progressOta").value = Math.round(percent);
+          $("#status").innerHTML = Math.round(percent) + "% transferred";
+          if (event.loaded  == event.total) $("#status").innerHTML = 'Uploaded, wait for completion result';
+        }
+
+        function completeHandler(event) {
+          $("#status").innerHTML = event.target.responseText;
+          $("#progressOta").value = 0;
+        }
+
+        function errorHandler(event) {
+          $("#status").innerHTML = "Upload Failed";
+          $("#progressOta").value = 0;
+        }
+
+        function abortHandler(event) {
+          $("#status").innerHTML = "Upload Aborted";
+          $("#progressOta").value = 0;
+        }
+        
+        /************* App specific ***************/
+        
+        function processStatus(dest, key, value, fromUser = true) {
+          // process change to status value
+          if (dest == ID) {
+            // operation based on ID
+            if (key == "wifi") getConfig("0");
+            else if (key == "hostName") document.title = value;
+            else if (key == "otafile") otaUploadFile();
+            else if (key == "alertMsg") showAlert(value);
+            else if (key == "clearWSlog") $('#applog').innerHTML = "";
+            else if (key == "settings") getConfig("01");
+            else if (key == "reset") applyChanges();
+            else if (key == "wsMode") value == 1 ? initWebSocket() : closeWS();
+            else if (fromUser) sendControl(key, value); // remaining changes are passed thru to app
+          }
+          else if (dest == CLASS) {}
+        }
+      
+      });
+    </script>
+  </body>
+</html>
