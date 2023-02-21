@@ -339,7 +339,10 @@ bool loadConfig() {
   if (loadConfigVect()) {
     retrieveConfigVal("appId", appId);
     if (strcmp(appId, APP_NAME)) {
+      // cleanup storage for different app
       sprintf(startupFailure, "Wrong configs.txt file, expected %s, got %s", APP_NAME, appId);
+      deleteFolderOrFile(DATA_DIR);
+      savePrefs(false);
       return false;
     }
     loadPrefs(); // overwrites any corresponding entries in config
