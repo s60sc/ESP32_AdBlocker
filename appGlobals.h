@@ -44,7 +44,7 @@
 //#define INCLUDE_SMTP
 //#define INCLUDE_SD
 
-#define IS_IO_EXTENDER true // must be true for IO_Extender
+#define IS_IO_EXTENDER false // must be true for IO_Extender
 #define EXTPIN 100
 
 /******************** Function declarations *******************/
