@@ -33,8 +33,7 @@
 #define MAX_PWD_LEN 64
 #define JSON_BUFF_LEN (1024 * 4) 
 #define MAX_CONFIGS 50 // > number of entries in configs.txt
-//#define GITHUB_URL "https://raw.githubusercontent.com/s60sc/ESP32_AdBlocker/master"
-#define GITHUB_URL "https://raw.githubusercontent.com/s60sc/test/main"
+#define GITHUB_URL "https://raw.githubusercontent.com/s60sc/ESP32_AdBlocker/master"
 
 #define FILLSTAR "****************************************************************"
 #define DELIM '~'
