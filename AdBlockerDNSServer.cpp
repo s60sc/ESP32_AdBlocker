@@ -25,6 +25,22 @@ DNSServer::DNSServer()
   _port = 0;
 }
 
+DNSServer::~DNSServer()
+{
+  if (_dnsHeader) {
+    free(_dnsHeader);
+    _dnsHeader = NULL;
+  }
+  if (_dnsQuestion) {
+    free(_dnsQuestion);
+    _dnsQuestion = NULL;
+  }
+  if (_buffer) {
+    free(_buffer);
+    _buffer = NULL;
+  }
+}
+
 bool DNSServer::start(const uint16_t &port, const String &domainName,
                      const IPAddress &resolvedIP)
 {
@@ -169,8 +185,6 @@ String DNSServer::getDomainNameWithoutWwwPrefix()
 
 void DNSServer::replyWithIP()
 {
-  if (_buffer == NULL) return;
-  
   _udp.beginPacket(_udp.remoteIP(), _udp.remotePort());
   
   // Change the type of message to a response and set the number of answers equal to 
@@ -209,12 +223,11 @@ void DNSServer::replyWithIP()
 
 void DNSServer::replyWithCustomCode()
 {
-  if (_buffer == NULL) return;
   _dnsHeader->QR = DNS_QR_RESPONSE;
   _dnsHeader->RCode = (unsigned char)_errorReplyCode;
   _dnsHeader->QDCount = 0;
 
   _udp.beginPacket(_udp.remoteIP(), _udp.remotePort());
-  _udp.write(_buffer, sizeof(DNSHeader));
+  _udp.write((unsigned char*)_dnsHeader, sizeof(DNSHeader));
   _udp.endPacket();
 }
