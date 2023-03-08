@@ -1,4 +1,4 @@
-No /*
+/*
    ESP32_AdBlocker acts as a DNS Sinkhole by returning 0.0.0.0 for any domain names in its blocked list, 
    else forwards to an external DNS server to resolve IP addresses. This prevents content being retrieved 
    from or sent to blocked domains. Searches generally take <200us.
@@ -13,8 +13,6 @@ No /*
    arduino-esp32 library DNSServer.cpp modified as custom AdBlockerDNSServer.cpp so that DNSServer::processNextRequest()
    calls checkBlocklist() in ESP32_AdBlocker to check if domain blocked, which returns the relevant IP. 
    Based on idea from https://github.com/rubfi/esphole
-
-   Compile with partition scheme 'No OTA (2M APP/2M SPIFFS)'
 
    s60sc 2020, 2023
 */
