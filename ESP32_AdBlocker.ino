@@ -25,6 +25,7 @@ static bool startedUp = false;
 
 void setup() {  
   logSetup();
+  if (!psramFound()) sprintf(startupFailure, "Startup Failure: Need PSRAM to be enabled");
   startStorage();
   loadConfig();
 
