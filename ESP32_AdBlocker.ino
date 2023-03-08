@@ -1,4 +1,4 @@
- /*
+No /*
    ESP32_AdBlocker acts as a DNS Sinkhole by returning 0.0.0.0 for any domain names in its blocked list, 
    else forwards to an external DNS server to resolve IP addresses. This prevents content being retrieved 
    from or sent to blocked domains. Searches generally take <200us.
