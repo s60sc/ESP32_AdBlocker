@@ -6,7 +6,7 @@ ESP32_AdBlocker acts as a DNS Sinkhole (like [Pi-Hole](https://pi-hole.net/)) by
 
 ESP32_AdBlocker is an Arduino sketch. The ESP32 module needs PSRAM: 
 * ESP32-S3 with 8MB PSRAM can host a currently sized blocklist. Domain searches take <50 micro seconds.
-* ESP32 with 4MB PSRAM will truncate a currently sized blocklist. Domain searches take <100 micro seconds.
+* ESP32 with 4MB PSRAM may truncate a currently sized blocklist. Domain searches take <100 micro seconds.
 
 ## Operation
 
@@ -14,16 +14,20 @@ The ESP32_AdBlocker web page is used to enter the URL of the blocklist to be dow
 
 <img src="extras/webpage.png" width="500" height="400">
 
-Press __Reload__ to download the file. It will take a several minutes for ESP32_AdBlocker to be ready after processing and sorting the data. Progress can be monitored on the web page. Subsequent reloads of the same file are much quicker as only updates need to be processed.
-As only one file can be downloaded, a consolidated blocklist should be used. Select a file less than the size of the PSRAM. The file format should be in either HOSTS format or Adblock format (only domain name entries processed). The following site for example provides a list of suitable files: https://github.com/StevenBlack/hosts.
+After entry, it will take several minutes for ESP32_AdBlocker to be ready after processing and sorting the data. Progress can be monitored on the web page. Subsequent reloads of the same file are much quicker as only updates need to be processed. ESP32-S3 is about twice as fast as the ESP32.
+As only one file can be downloaded, a consolidated blocklist should be used. Ideally select a file less than the size of the PSRAM. The file format should be in either HOSTS format or Adblock format (only domain name entries processed). The following site for example provides a list of suitable files: https://github.com/StevenBlack/hosts.
 
 ESP32_AdBlocker will subsequently download the selected file daily at a given time to keep the blocklist updated.
 
-To make ESP32_AdBlocker your preferred DNS server, enter its IPv4 address in place of the current DNS server IPs in your router / devices. ESP32_AdBlocker does not have an IPv6 address but some devices use IPv6 by default, so disable IPv6 DNS on your device / router to force it to use IPv4 DNS.
+To make ESP32_AdBlocker your preferred DNS server, enter its IPv4 address in place of the current DNS server IPs in your router / devices. ESP32_AdBlocker does not have an IPv6 address but some devices use IPv6 by default, so disable IPv6 DNS on your device / router to force it to use IPv4 DNS.  
+Eg for a Windows PC, to use AdBlocker as DNS Server having IP address `192.168.1.168`, at the Windows command prompt, enter:  
+`netsh interface ip set dns "Wi-Fi" static 192.168.1.168`  
+To switch back to usual DNS Server, eg Google, enter:  
+`netsh interface ip set dns "Wi-Fi" static 8.8.8.8` 
 
 ## Installation
 
-Download github files into the Arduino IDE sketch folder, removing `-master` from the application folder name.
+Download github files into the Arduino IDE sketch folder, removing `-main` from the application folder name.
 
 Compile with PSRAM enabled and the following Partition scheme:
 * ESP32-S3 - `8M with spiffs (...)`

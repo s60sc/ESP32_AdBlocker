@@ -8,8 +8,6 @@
 
 #define MAX_PAYLOAD_LEN 1000 // bigger than biggest websocket msg
 #define DATA_UPDATE 999
-#define OTAport 82
-static WebServer otaServer(OTAport); 
 
 static esp_err_t fileHandler(httpd_req_t* req, bool download = false);
 static void startOTAserver();
@@ -20,7 +18,8 @@ static char value[FILE_NAME_LEN];
 static char retainAction[2];
 int refreshVal = 5000; // msecs
 
-static httpd_handle_t httpServer = NULL; // web server listens on port 80
+static WebServer otaServer(OTA_PORT); 
+static httpd_handle_t httpServer = NULL; // web server port 
 static int fdWs = -1; //websocket sockfd
 static httpd_ws_frame_t wsPkt;
 
@@ -45,13 +44,15 @@ static bool sendChunks(File df, httpd_req_t *req) {
 static esp_err_t fileHandler(httpd_req_t* req, bool download) {
   // send file contents to browser
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  if (!strcmp(inFileName, LOG_FILE_PATH)) flush_log(false);
   File df = fp.open(inFileName);
   if (!df) {
     df.close();
-    const char* resp_str = "File does not exist or cannot be opened";
-    LOG_ERR("%s: %s", resp_str, inFileName);
+    char errMsg[200];
+    snprintf(errMsg, 200, "File does not exist or cannot be opened: %s", inFileName);
+    LOG_ERR("%s", errMsg);
     httpd_resp_set_status(req, HTTPD_400);
-    httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, errMsg, HTTPD_RESP_USE_STRLEN);
     return ESP_FAIL;
   } 
   if (download) {  
@@ -76,6 +77,25 @@ static esp_err_t fileHandler(httpd_req_t* req, bool download) {
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }
+
+static void displayLog(httpd_req_t *req) {
+  // output ram log to browser
+  // prep log start point
+  int startPtr = (mlogCycle) ? mlogEnd  : 0; 
+  int endPtr = mlogEnd;
+  httpd_resp_set_type(req, "text/plain"); 
+  
+  // output log in chunks
+  do {
+    int maxChunk = endPtr > startPtr ? endPtr - startPtr : RAM_LOG_LEN - startPtr - 1;
+    size_t chunk = std::min(CHUNKSIZE, maxChunk);  
+    if (chunk > 0) httpd_resp_send_chunk(req, messageLog + startPtr, chunk); 
+    startPtr += chunk;
+    if (startPtr == RAM_LOG_LEN - 1) startPtr = 0;
+  } while (startPtr != endPtr);
+  httpd_resp_send_chunk(req, NULL, 0);
+}
+
 
 static esp_err_t indexHandler(httpd_req_t* req) {
   strcpy(inFileName, INDEX_PAGE_PATH);
@@ -137,9 +157,7 @@ static esp_err_t webHandler(httpd_req_t* req) {
   urlDecode(variable);
 
   // check file extension to determine required processing before response sent to browser
-  if (!strcmp(variable, "LOG.htm")) {
-    flush_log(false);
-  } else if (!strcmp(variable, "OTA.htm")) {
+  if (!strcmp(variable, "OTA.htm")) {
     // request for built in OTA page, if index html defective
     httpd_resp_set_type(req, "text/html"); 
     return httpd_resp_send(req, otaPage_html, HTTPD_RESP_USE_STRLEN);
@@ -173,7 +191,8 @@ static esp_err_t controlHandler(httpd_req_t *req) {
   // process control query from browser 
   // obtain key from query string
   extractQueryKey(req, variable);
-  if (!strcmp(variable, "startOTA")) startOTAserver();
+  if (!strcmp(variable, "displayLog")) displayLog(req);
+  else if (!strcmp(variable, "startOTA")) startOTAserver();
   else {
     strcpy(value, variable + strlen(variable) + 1); // value points to second part of string
     if (!strcmp(variable, "reset")) {
@@ -242,9 +261,8 @@ static esp_err_t updateHandler(httpd_req_t *req) {
       }
     }
   } while (ret > 0);
-
-  if (parseJson(rxSize)) webAppSpecificHandler (req, "action", retainAction); 
   httpd_resp_send(req, NULL, 0); 
+  if (parseJson(rxSize)) webAppSpecificHandler (req, "action", retainAction); 
   return ESP_OK;
 }
 
@@ -252,7 +270,7 @@ static void sendCrossOriginHeader() {
   // prevent CORS from blocking request
   otaServer.sendHeader("Access-Control-Allow-Origin", "*");
   otaServer.sendHeader("Access-Control-Max-Age", "600");
-  otaServer.sendHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
+  otaServer.sendHeader("Access-Control-Allow-Methods", "POST,GET,HEAD,OPTIONS");
   otaServer.sendHeader("Access-Control-Allow-Headers", "*");
   otaServer.send(204);
 };
@@ -322,9 +340,12 @@ void startWebServer() {
 #if CONFIG_IDF_TARGET_ESP32S3
   config.stack_size = 1024 * 8;
 #endif  
+  config.server_port = WEB_PORT;
+  config.ctrl_port = WEB_PORT; 
+  config.lru_purge_enable = true;
   httpd_uri_t indexUri = {.uri = "/", .method = HTTP_GET, .handler = indexHandler, .user_ctx = NULL};
-   httpd_uri_t webUri = {.uri = "/web", .method = HTTP_GET, .handler = webHandler, .user_ctx = NULL};
-   httpd_uri_t controlUri = {.uri = "/control", .method = HTTP_GET, .handler = controlHandler, .user_ctx = NULL};
+  httpd_uri_t webUri = {.uri = "/web", .method = HTTP_GET, .handler = webHandler, .user_ctx = NULL};
+  httpd_uri_t controlUri = {.uri = "/control", .method = HTTP_GET, .handler = controlHandler, .user_ctx = NULL};
   httpd_uri_t updateUri = {.uri = "/update", .method = HTTP_POST, .handler = updateHandler, .user_ctx = NULL};
   httpd_uri_t statusUri = {.uri = "/status", .method = HTTP_GET, .handler = statusHandler, .user_ctx = NULL};
   httpd_uri_t wsUri = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = NULL, .is_websocket = true};
@@ -371,7 +392,7 @@ static void uploadHandler() {
       if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) Update.printError(Serial);
     } else {
       // replace relevant data file on storage
-      char replaceFile[20] = DATA_DIR;
+      char replaceFile[FILE_NAME_LEN] = DATA_DIR;
       strcat(replaceFile, "/");
       strcat(replaceFile, filename.c_str());
       LOG_INF("Data file update using %s", replaceFile);
@@ -386,7 +407,7 @@ static void uploadHandler() {
     if (cmd == DATA_UPDATE) {
       // web page update
       if (df.write(upload.buf, upload.currentSize) != upload.currentSize) {
-        LOG_ERR("Failed to save %s on Storage", df.path());
+        LOG_ERR("Failed to save %s on Storage", df.name());
         return;
       }
     } else {
@@ -416,7 +437,7 @@ static void otaFinish() {
 
 static void OTAtask(void* parameter) {
   // receive OTA upload details
-  LOG_INF("Starting OTA server on port: %u", OTAport);
+  LOG_INF("Starting OTA server on port: %u", OTA_PORT);
   otaServer.on("/upload", HTTP_OPTIONS, sendCrossOriginHeader); 
   otaServer.on("/upload", HTTP_POST, otaFinish, uploadHandler);
   otaServer.begin();

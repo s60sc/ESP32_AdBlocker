@@ -49,6 +49,10 @@ static bool prepSD_MMC() {
   fileVec.reserve(1000);
   if (psramFound()) heap_caps_malloc_extmem_enable(4096);
 #if CONFIG_IDF_TARGET_ESP32S3
+#if !defined(SD_MMC_CLK)
+  LOG_ERR("SD card pins not defined");
+  res = false;
+#endif
   SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
 #endif
   
@@ -69,6 +73,18 @@ static bool prepSD_MMC() {
 }
 #endif
 
+static void listFolder(const char* rootDir) { 
+  // list contents of folder
+  LOG_INF("Sketch size %dkB", ESP.getSketchSize() / 1024);    
+  File root = STORAGE.open(rootDir);
+  File file = root.openNextFile();
+  while (file) {
+    LOG_INF("File: %s, size: %u", file.path(), file.size());
+    file = root.openNextFile();
+  }
+  LOG_INF("%s: Total bytes %lld, Used bytes %lld", fsType, (uint64_t)(STORAGE.totalBytes()), (uint64_t)(STORAGE.usedBytes())); 
+}
+
 bool startStorage() {
   // start required storage device (SD card or flash file system)
   bool res = false;
@@ -76,8 +92,8 @@ bool startStorage() {
   if ((fs::SDMMCFS*)&STORAGE == &SD_MMC) {
     strcpy(fsType, "SD_MMC");
     res = prepSD_MMC();
-    if (!res) sprintf(startupFailure, "Startup Failure: Check SD card inserted");
-    else checkFreeSpace();
+    if (res) listFolder(DATA_DIR);
+    else sprintf(startupFailure, "Startup Failure: Check SD card inserted");
     return res; 
   }
 #endif
@@ -94,26 +110,20 @@ bool startStorage() {
     if ((fs::LittleFSFS*)&STORAGE == &LittleFS) {
       strcpy(fsType, "LittleFS");
       res = LittleFS.begin(formatIfMountFailed);
+      ramLogPrep();
       // create data folder if not present
       if (res && !LittleFS.exists(DATA_DIR)) LittleFS.mkdir(DATA_DIR);
     }
 #endif
     if (res) {  
       // list details of files on file system
-      const char* rootDir = !strcmp(fsType, "LittleFS") ? "/data" : "/";
-      File root = STORAGE.open(rootDir);
-      File file = root.openNextFile();
-      while (file) {
-        LOG_INF("File: %s, size: %u", file.path(), file.size());
-        file = root.openNextFile();
-      }
-      LOG_INF("%s: Total bytes %lld, Used bytes %lld", fsType, (uint64_t)(STORAGE.totalBytes()), (uint64_t)(STORAGE.usedBytes())); 
+      const char* rootDir = !strcmp(fsType, "LittleFS") ? DATA_DIR : "/";
+      listFolder(rootDir);
     }
   } else {
     sprintf(startupFailure, "Failed to mount %s", fsType);  
     dataFilesChecked = true; // disable setupAssist as no file system
   }
-  LOG_INF("Sketch size %dkB", ESP.getSketchSize() / 1024);
   debugMemory("startStorage");
   return res;
 }
@@ -126,9 +136,7 @@ void getOldestDir(char* oldestDir) {
   while (file) {
     if (file.isDirectory() && strstr(file.name(), "System") == NULL // ignore Sys Vol Info
         && strstr(DATA_DIR, file.name()) == NULL) { // ignore data folder
-      if (strcmp(oldestDir, file.path()) > 0) {
-      strcpy(oldestDir, file.path()); 
-      }
+      if (strcmp(oldestDir, file.path()) > 0) strcpy(oldestDir, file.path()); 
     }
     file = root.openNextFile();
   }
@@ -162,6 +170,7 @@ bool checkFreeSpace() {
       if (sdFreeSpaceMode == 2) ftpFileOrFolder(oldestDir); // Upload and then delete oldest folder
 #endif
       deleteFolderOrFile(oldestDir);
+      freeSize = (size_t)((STORAGE.totalBytes() - STORAGE.usedBytes()) / ONEMEG);
     }
     LOG_INF("Storage free space: %uMB", freeSize);
     res = true;
@@ -169,14 +178,9 @@ bool checkFreeSpace() {
   return res;
 } 
 
-bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* extension) {
-  // either list day folders in root, or files in a day folder
-  bool hasExtension = false;
-  char partJson[200]; // used to build SD page json buffer
+void setFolderName(const char* fname, char* fileName) {
+  // set current or previous folder 
   char partName[FILE_NAME_LEN];
-  char fileName[FILE_NAME_LEN];
-  bool noEntries = true;
-  // set current or previous folder
   if (strchr(fname, '~') != NULL) {
     if (!strcmp(fname, currentDir)) {
       dateFormat(partName, sizeof(partName), true);
@@ -194,6 +198,15 @@ bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* 
       LOG_INF("Previous directory set to %s", fileName);
     } else strcpy(fileName, ""); 
   } else strcpy(fileName, fname);
+}
+
+bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* extension) {
+  // either list day folders in root, or files in a day folder
+  bool hasExtension = false;
+  char partJson[200]; // used to build SD page json buffer
+  bool noEntries = true;
+  char fileName[FILE_NAME_LEN];
+  setFolderName(fname, fileName);
 
   // check if folder or file
   if (strstr(fileName, extension) != NULL) {
@@ -255,21 +268,24 @@ bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* 
 
 void deleteFolderOrFile(const char* deleteThis) {
   // delete supplied file or folder, unless it is a reserved folder
-  File df = STORAGE.open(deleteThis);
+  char fileName[FILE_NAME_LEN];
+  setFolderName(deleteThis, fileName);
+  File df = STORAGE.open(fileName);
   if (!df) {
-    LOG_ERR("Failed to open %s", deleteThis);
+    LOG_ERR("Failed to open %s", fileName);
     return;
   }
-  if (df.isDirectory() && (strstr(deleteThis, "System") != NULL 
-      || strstr("/", deleteThis) != NULL)) {
+  if (df.isDirectory() && (strstr(fileName, "System") != NULL 
+      || strstr("/", fileName) != NULL)) {
     df.close();   
-    LOG_ERR("Deletion of %s not permitted", deleteThis);
+    LOG_ERR("Deletion of %s not permitted", fileName);
+    delay(1000); // reduce thrashing on same error
     return;
   }  
-  LOG_INF("Deleting : %s", deleteThis);
+  LOG_INF("Deleting : %s", fileName);
   // Empty named folder first
-  if (df.isDirectory() || ((!strcmp(fsType, "SPIFFS")) && strstr("/", deleteThis) != NULL)) {
-    LOG_INF("Folder %s contents", deleteThis);
+  if (df.isDirectory() || ((!strcmp(fsType, "SPIFFS")) && strstr("/", fileName) != NULL)) {
+    LOG_INF("Folder %s contents", fileName);
     File file = df.openNextFile();
     while (file) {
       char filepath[FILE_NAME_LEN];
@@ -283,7 +299,10 @@ void deleteFolderOrFile(const char* deleteThis) {
       file = df.openNextFile();
     }
     // Remove the folder
-    if (df.isDirectory()) LOG_ALT("Folder %s %sdeleted", deleteThis, STORAGE.rmdir(deleteThis) ? "" : "not ");
+    if (df.isDirectory()) LOG_ALT("Folder %s %sdeleted", fileName, STORAGE.rmdir(fileName) ? "" : "not ");
     else df.close();
-  } else LOG_ALT("File %s %sdeleted", deleteThis, STORAGE.remove(deleteThis) ? "" : "not ");  //Remove the file
+  } else {
+    df.close();
+    LOG_ALT("File %s %sdeleted", deleteThis, STORAGE.remove(deleteThis) ? "" : "not ");  //Remove the file
+  }
 }

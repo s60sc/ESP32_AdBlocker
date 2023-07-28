@@ -97,9 +97,13 @@ static bool wgetFile(const char* githubURL, const char* filePath, bool restart =
 bool checkDataFiles() {
   // Download any missing data files
   if (!fp.exists(DATA_DIR)) fp.mkdir(DATA_DIR);
-  bool res = wgetFile(GITHUB_URL, CONFIG_FILE_PATH, true);
-  if (res) res = wgetFile(GITHUB_URL, INDEX_PAGE_PATH);      
-  if (res) res = appDataFiles();
+  bool res = false;
+  if (strlen(GITHUB_URL)) {
+    res = wgetFile(GITHUB_URL, CONFIG_FILE_PATH, true);
+    if (res) wgetFile(GITHUB_URL, COMMON_JS_PATH);
+    if (res) wgetFile(GITHUB_URL, INDEX_PAGE_PATH);        
+    if (res) appDataFiles();
+  }
   return res;
 }
 
@@ -166,7 +170,9 @@ const char* otaPage_html = R"~(
       <p id="loaded_n_total"></p>
     </form>
     <script>
-      const baseHost = window.location.origin;
+      const webPort = !window.location.port ? "80" : window.location.port;
+      const otaPort = String(+webPort + 1);
+      const otaServer = 'http://' + document.location.hostname + ':' + otaPort;
       const $ = document.querySelector.bind(document);
      
       async function uploadFile() {
@@ -182,7 +188,7 @@ const char* otaPage_html = R"~(
           ajax.addEventListener("load", completeHandler, false);
           ajax.addEventListener("error", errorHandler, false);
           ajax.addEventListener("abort", abortHandler, false);
-          ajax.open("POST", baseHost + ':82/upload');
+          ajax.open("POST", otaServer + '/upload');
           ajax.send(formdata);
         } else console.log(response.status); 
       }
