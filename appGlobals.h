@@ -28,7 +28,7 @@
 #define FILE_NAME_LEN 128
 #define JSON_BUFF_LEN (1024 * 4) 
 #define MAX_CONFIGS 50 // > number of entries in configs.txt
-#define GITHUB_URL "https://raw.githubusercontent.com/s60sc/ESP32_AdBlocker/master"
+#define GITHUB_URL "https://raw.githubusercontent.com/s60sc/ESP32_AdBlocker/main"
 
 #define STORAGE LittleFS // One of LittleFS or SD_MMC
 #define RAMSIZE (1024 * 8) 
