@@ -5,11 +5,16 @@
 #include "appGlobals.h"
 #include "AdBlockerDNSServer.h" // customised
 
+const size_t prvtkey_len = 0;
+const size_t cacert_len = 0;
+const char* prvtkey_pem = "";
+const char* cacert_pem = "";
+
 static size_t maxDomains; // for reserving ptrs memory
 static size_t minMemory; // min free memory after vector populated
 static const uint16_t maxLineLen = 1024; // max length of line processed in downloaded blocklists
 static uint8_t maxDomLen; // max length of domain name in blocklist
-static char fileURL[FILE_NAME_LEN];
+static char fileURL[IN_FILE_NAME_LEN] = {0};
 
 static DNSServer dnsServer;
 static const byte DNS_PORT = 53;
@@ -28,10 +33,6 @@ struct {
   char* lastDomain;
   bool lastResult;
 } lastCheck;
-
-static float inline inKB(size_t inVal) {
-  return (float)(inVal / 1024.0);
-}
                                                                                                       
 static void dnsTask(void* parameter) {
   // higher priority than loop()
@@ -129,81 +130,81 @@ static void extractBlocklist() {
   }                
 }
                                                                 
-static bool downloadFile() {
+static bool downloadBlockList() {
   // download blocklist file from web
+  bool res = false;
   WiFiClientSecure wclient;
-  HTTPClient https;
-  size_t downloadSize = 0;
-  char progStr[10];
-  wclient.setCACert(git_rootCACertificate);
-  if (!https.begin(wclient, fileURL)) {
-    char errBuf[100];
-    wclient.lastError(errBuf, 100);
-    LOG_ERR("Could not connect to github server, err: %s", errBuf);
-    return false;
-  } else {
-    LOG_INF("Downloading %s\n", fileURL);
-    int httpCode = https.GET();
-    if (httpCode > 0) {
-      uint32_t loadTime = millis();
-      if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
-        // file available for download
-        // get length of content (is -1 when Server sends no Content-Length header)
-        int left = https.getSize();
-        left > 0 ? LOG_INF("File size: %u bytes", left) : LOG_WRN("File size unknown");
-        LOG_INF("%0.1fKB memory available for download", inKB(storageSize));
-        if (left > storageSize) LOG_WRN("File is larger than memory, may get truncated");
-        WiFiClient* stream = https.getStreamPtr(); // stream data to client
-        uint32_t lastRead = millis();
-        size_t lineCnt = 0;
+  if (remoteServerConnect(wclient, GITHUB_HOST, HTTPS_PORT, git_rootCACertificate)) {
+    HTTPClient https;
+    size_t downloadSize = 0;
+    char progStr[10];
 
-        while (https.connected() && (left > 0 || left == -1)) {
-          if (stream->available()) {
-            size_t lineSize = stream->readBytesUntil('\n', domainLine, maxLineLen);
-            domainLine[lineSize] = 0;
-            lineSize++; // add in count for terminator
-            downloadSize += lineSize;
-            if (left > 0) left -= lineSize;
-            extractBlocklist();
-            if (itemsLoaded >= maxDomains) {
-              LOG_ALT("Blocklist truncated as domain limit reached %u", maxDomains);
-              break;
-            }
-            if (++lineCnt % 1000 == 0) {
-              // periodically check remaining memory
-              size_t remaining = storageSize - blocklistSize;
-              if (remaining < minMemory) {
-                LOG_ALT("Blocklist truncated to avoid memory overflow, %u bytes remaining\n", remaining);
+    if (https.begin(wclient, fileURL)) {
+      LOG_INF("Downloading %s\n", fileURL);
+      int httpCode = https.GET();
+      if (httpCode > 0) {
+        uint32_t loadTime = millis();
+        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+          // file available for download
+          // get length of content (is -1 when Server sends no Content-Length header)
+          int left = https.getSize();
+          left > 0 ? LOG_INF("File size: %u bytes", left) : LOG_WRN("File size unknown");
+          LOG_INF("%s memory available for download", fmtSize(storageSize));
+          if (left > storageSize) LOG_WRN("File is larger than memory, may get truncated");
+          WiFiClient* stream = https.getStreamPtr(); // stream data to client
+          uint32_t lastRead = millis();
+          size_t lineCnt = 0;
+
+          while (https.connected() && (left > 0 || left == -1)) {
+            if (stream->available()) {
+              size_t lineSize = stream->readBytesUntil('\n', domainLine, maxLineLen);
+              domainLine[lineSize] = 0;
+              lineSize++; // add in count for terminator
+              downloadSize += lineSize;
+              if (left > 0) left -= lineSize;
+              extractBlocklist();
+              if (itemsLoaded >= maxDomains) {
+                LOG_ALT("Blocklist truncated as domain limit reached %u", maxDomains);
                 break;
               }
-              // show progress
-              if (left > 0) {
-                float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
-                logPrint("%0.1f%%\n", loadProg);
-                sprintf(progStr, "%0.1f%%", loadProg);
-                updateConfigVect("loadProg", progStr);
+              if (++lineCnt % 1000 == 0) {
+                // periodically check remaining memory
+                size_t remaining = storageSize - blocklistSize;
+                if (remaining < minMemory) {
+                  LOG_ALT("Blocklist truncated to avoid memory overflow, %u bytes remaining\n", remaining);
+                  break;
+                }
+                // show progress
+                if (left > 0) {
+                  float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
+                  logPrint("%0.1f%%\n", loadProg);
+                  sprintf(progStr, "%0.1f%%", loadProg);
+                  updateConfigVect("loadProg", progStr);
+                }
               }
+              lastRead = millis();
+            } else if (millis() - lastRead > timeoutVal) {
+              // timed out on read
+              if (left > 0) LOG_WRN("Timeout on download, %s unread", fmtSize(left));
+              break;
             }
-            lastRead = millis();
-          } else if (millis() - lastRead > timeoutVal) {
-            // timed out on read
-            if (left > 0) LOG_WRN("Timeout on download, %u bytes unread", left);
-            break;
           }
-        }
-        ptrs[itemsLoaded] = blocklistSize;
-        LOG_INF("Download complete, processed %u bytes in %u secs", downloadSize, (millis() - loadTime) / 1000);
-        LOG_ALT("Loaded %u blocked domains, using %0.1fKB of %0.1fKB", itemsLoaded, inKB(blocklistSize), inKB(storageSize));
-        updateConfigVect("loadProg", "Complete");
-      } else LOG_WRN("Unexpected result code %u %s", httpCode, https.errorToString(httpCode).c_str());
+          ptrs[itemsLoaded] = blocklistSize;
+          LOG_INF("Download complete, processed %s in %u secs", fmtSize(downloadSize), (millis() - loadTime) / 1000);
+          LOG_ALT("Loaded %u blocked domains, using %s of %s", itemsLoaded, fmtSize(blocklistSize), fmtSize(storageSize));
+          updateConfigVect("loadProg", "Complete");
+          res = true;
+        } else LOG_WRN("Unexpected result code %u %s", httpCode, https.errorToString(httpCode).c_str());
+      } else LOG_ERR("Connection failed with error: %s", https.errorToString(httpCode).c_str());
     } else {
-      LOG_ERR("Connection failed with error: %s", https.errorToString(httpCode).c_str());
-      return false;
+      char errBuf[100] = {0};
+      wclient.lastError(errBuf, 100);
+      LOG_ERR("Could not connect to %s, err: %s", fileURL, errBuf);
     }
-  }
-  https.end();
-  wclient.stop();
-  return true;
+    https.end();
+  } 
+  remoteServerClose(wclient);
+  return res;
 }
 
 static void prepDNS() {
@@ -223,7 +224,10 @@ static void loadBlockList(const char* reason) {
   if (!downloading) {
     downloading = true;
     LOG_INF("%s load of latest blocklist", reason);
-    if (!downloadFile()) doRestart("Failed to complete blocklist download, retry ...");
+    while (!downloadBlockList()) {
+      LOG_WRN("Failed to complete blocklist download, retry ...");
+      delay(10000);
+    }
     downloading = false;
   } else LOG_WRN("Ignore request as download in progress");
 }
@@ -260,7 +264,7 @@ void showBlockList(int maxItems) {
 /************************ webServer callbacks *************************/
 
 bool updateAppStatus(const char* variable, const char* value) {
-  // update vars from browser input
+  // update vars from configs and browser input
   bool res = true;
   int intVal = atoi(value);
   if (!strcmp(variable, "custom")) {
@@ -271,7 +275,7 @@ bool updateAppStatus(const char* variable, const char* value) {
     sprintf(cntStr, "%u", allowCnt);
     updateConfigVect("allowCnt", cntStr);
   }
-  else if (!strcmp(variable, "fileURL")) strncpy(fileURL, value, FILE_NAME_LEN - 1);
+  else if (!strcmp(variable, "fileURL")) strncpy(fileURL, value, IN_FILE_NAME_LEN - 1);
   else if (!strcmp(variable, "maxDomains")) maxDomains = intVal * 1000;
   else if (!strcmp(variable, "minMemory")) minMemory = intVal * 1024;
   else if (!strcmp(variable, "maxDomLen")) maxDomLen = intVal;
@@ -279,30 +283,36 @@ bool updateAppStatus(const char* variable, const char* value) {
   return res;
 }
 
-void wsAppSpecificHandler(const char* wsMsg) {
+void appSpecificWsBinHandler(uint8_t* wsMsg, size_t wsMsgLen) {
+  LOG_ERR("Unexpected websocket binary frame");
+}
+
+void appSpecificWsHandler(const char* wsMsg) {
   // message from web socket
   int wsLen = strlen(wsMsg) - 1;
   switch ((char)wsMsg[0]) {
+    case 'X':
+    break;
     case 'H':
       // keepalive heartbeat, return status
-      break;
+    break;
     case 'S':
       // status request
       buildJsonString(wsLen); // required config number
       logPrint("%s\n", jsonBuff);
-      break;
+    break;
     case 'U':
       // update or control request
       memcpy(jsonBuff, wsMsg + 1, wsLen); // remove 'U'
       parseJson(wsLen);
-      break;
+    break;
     case 'K':
       // kill websocket connection
-      killWebSocket();
-      break;
+      killSocket();
+    break;
     default:
       LOG_WRN("unknown command %c", (char)wsMsg[0]);
-      break;
+    break;
   }
 }
 
@@ -312,8 +322,16 @@ void buildAppJsonString(bool filter) {
   *p = 0;
 }
 
-esp_err_t webAppSpecificHandler(httpd_req_t *req, const char* variable, const char* value) {
+esp_err_t appSpecificWebHandler(httpd_req_t *req, const char* variable, const char* value) {
   return ESP_OK;
+}
+
+esp_err_t appSpecificSustainHandler(httpd_req_t* req) {
+  return ESP_OK;
+}
+
+void externalAlert(const char* subject, const char* message) {
+  // alert any configured external servers
 }
 
 bool appDataFiles() {
@@ -326,4 +344,38 @@ void doAppPing() {
   if (checkAlarm()) loadBlockList("Scheduled");
 }
 
-void OTAprereq() {} 
+void OTAprereq() {
+  stopPing();
+}
+
+/************** default app configuration **************/
+const char* appConfig = R"~(
+restart~~99~T~na
+ST_SSID~~0~T~Wifi SSID name
+ST_Pass~~0~T~Wifi SSID password
+ST_ip~~0~T~Static IP address
+ST_gw~~0~T~Router IP address
+ST_sn~255.255.255.0~0~T~Router subnet
+ST_ns1~~0~T~DNS server
+ST_ns2~~0~T~Alt DNS server
+AP_Pass~~0~T~AP Password
+AP_ip~~0~T~AP IP Address if not 192.168.4.1
+AP_sn~~0~T~AP subnet
+AP_gw~~0~T~AP gateway
+allowAP~2~0~C~Allow simultaneous AP
+timezone~GMT0~1~T~Timezone string: tinyurl.com/TZstring
+logType~0~99~N~Output log selection
+Auth_Name~~0~T~Optional user name for web page login
+Auth_Pass~~0~T~Optional user name for web page password
+formatIfMountFailed~0~1~C~Format file system on failure
+wifiTimeoutSecs~30~0~N~WiFi connect timeout (secs)
+alarmHour~4~1~N~Hour of day for blocklist update
+maxDomains~150~1~N~Max number of domains (* 1000)
+minMemory~128~1~N~Minimum free memory (KB)
+maxDomLen~100~1~N~Max length of domain name
+allowCnt~0~2~D~Allowed domains
+blockCnt~0~2~D~Blocked domains
+fileURL~https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts~2~T~URL for blocklist file
+loadProg~0~2~D~Blocklist download progress
+usePing~1~0~C~Use ping
+)~";

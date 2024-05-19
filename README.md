@@ -33,9 +33,9 @@ Compile with PSRAM enabled and the following Partition scheme:
 * ESP32-S3 - `8M with spiffs (...)`
 * ESP32 - `Minimal SPIFFS (...)`
 
-On first installation, the application will start in wifi AP mode - connect to SSID: **ESP32_AdBlocker_...**, to allow router and password details to be entered via the web page on 192.168.4.1. The application web pages and configuration data file (except passwords) are stored in the **/data** folder which is automatically downloaded to flash from GitHub. The **/data** folder can also be loaded via OTA.
+On first installation, the application will start in wifi AP mode - connect to SSID: **ESP32_AdBlocker_...**, to allow router and password details to be entered via the web page on `192.168.4.1`. The configuration data file (except passwords) is automatically created, and the application web pages automatically downloaded from GitHub to the SD card **/data** folder when an internet connection is available.
 
-Subsequent updates to the application, or to the **/data** folder contents, can be made using the **OTA Upload** tab. The **/data** folder can also be reloaded from GitHub using the **Reload /data** button on the **Edit Config** tab.
+Subsequent updates to the application, or to the **/data** folder files, can be made using the **OTA Upload** tab. The **/data** folder can also be reloaded from GitHub using the **Reload /data** button on the **Edit Config** tab, or by using a WebDAV client.
 
 ## Configuration
 
@@ -52,5 +52,7 @@ Press **Save** to make changes persistent.
 ## Logging
 
 The application log messages can be monitored on the web page tab **Show Log**.
+
+The **Verbose** button will reveal subsequent logging for each blocked or accepted connection.
 
 

@@ -1,47 +1,20 @@
 
 // Assist setup for new app installations
 // original provided by gemi254
-//
+// 
 // s60sc 2023
 
 #include "appGlobals.h"
 
-// Cert valid till April 2031
-const char* git_rootCACertificate = R"~(
------BEGIN CERTIFICATE-----
-MIIEvjCCA6agAwIBAgIQBtjZBNVYQ0b2ii+nVCJ+xDANBgkqhkiG9w0BAQsFADBh
-MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
-d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBD
-QTAeFw0yMTA0MTQwMDAwMDBaFw0zMTA0MTMyMzU5NTlaME8xCzAJBgNVBAYTAlVT
-MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxKTAnBgNVBAMTIERpZ2lDZXJ0IFRMUyBS
-U0EgU0hBMjU2IDIwMjAgQ0ExMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKC
-AQEAwUuzZUdwvN1PWNvsnO3DZuUfMRNUrUpmRh8sCuxkB+Uu3Ny5CiDt3+PE0J6a
-qXodgojlEVbbHp9YwlHnLDQNLtKS4VbL8Xlfs7uHyiUDe5pSQWYQYE9XE0nw6Ddn
-g9/n00tnTCJRpt8OmRDtV1F0JuJ9x8piLhMbfyOIJVNvwTRYAIuE//i+p1hJInuW
-raKImxW8oHzf6VGo1bDtN+I2tIJLYrVJmuzHZ9bjPvXj1hJeRPG/cUJ9WIQDgLGB
-Afr5yjK7tI4nhyfFK3TUqNaX3sNk+crOU6JWvHgXjkkDKa77SU+kFbnO8lwZV21r
-eacroicgE7XQPUDTITAHk+qZ9QIDAQABo4IBgjCCAX4wEgYDVR0TAQH/BAgwBgEB
-/wIBADAdBgNVHQ4EFgQUt2ui6qiqhIx56rTaD5iyxZV2ufQwHwYDVR0jBBgwFoAU
-A95QNVbRTLtm8KPiGxvDl7I90VUwDgYDVR0PAQH/BAQDAgGGMB0GA1UdJQQWMBQG
-CCsGAQUFBwMBBggrBgEFBQcDAjB2BggrBgEFBQcBAQRqMGgwJAYIKwYBBQUHMAGG
-GGh0dHA6Ly9vY3NwLmRpZ2ljZXJ0LmNvbTBABggrBgEFBQcwAoY0aHR0cDovL2Nh
-Y2VydHMuZGlnaWNlcnQuY29tL0RpZ2lDZXJ0R2xvYmFsUm9vdENBLmNydDBCBgNV
-HR8EOzA5MDegNaAzhjFodHRwOi8vY3JsMy5kaWdpY2VydC5jb20vRGlnaUNlcnRH
-bG9iYWxSb290Q0EuY3JsMD0GA1UdIAQ2MDQwCwYJYIZIAYb9bAIBMAcGBWeBDAEB
-MAgGBmeBDAECATAIBgZngQwBAgIwCAYGZ4EMAQIDMA0GCSqGSIb3DQEBCwUAA4IB
-AQCAMs5eC91uWg0Kr+HWhMvAjvqFcO3aXbMM9yt1QP6FCvrzMXi3cEsaiVi6gL3z
-ax3pfs8LulicWdSQ0/1s/dCYbbdxglvPbQtaCdB73sRD2Cqk3p5BJl+7j5nL3a7h
-qG+fh/50tx8bIKuxT8b1Z11dmzzp/2n3YWzW2fP9NsarA4h20ksudYbj/NhVfSbC
-EXffPgK2fPOre3qGNm+499iTcc+G33Mw+nur7SpZyEKEOxEXGlLzyQ4UfaJbcme6
-ce1XR2bFuAJKZTRei9AqPCCcUZlM51Ke92sRKw2Sfh3oius2FkOH6ipjv3U/697E
-A7sKPPcw7+uvTPyLNhBzPvOk
------END CERTIFICATE-----
-)~";
+#if (!INCLUDE_CERTS)
+const char* git_rootCACertificate = "";
+#endif
 
 static fs::FS fp = STORAGE;
 
-static bool wgetFile(const char* githubURL, const char* filePath, bool restart = false) {
-  // download file from github
+static bool wgetFile(const char* filePath) {
+  // download required data file from github repository and store
+  bool res = false;
   if (fp.exists(filePath)) {
     // if file exists but is empty, delete it to allow re-download
     File f = fp.open(filePath, FILE_READ);
@@ -50,23 +23,14 @@ static bool wgetFile(const char* githubURL, const char* filePath, bool restart =
     if (!fSize) fp.remove(filePath);
   }
   if (!fp.exists(filePath)) {
-    if (WiFi.status() != WL_CONNECTED) return false;  
     char downloadURL[150];
-    snprintf(downloadURL, 150, "%s%s", githubURL, filePath);
-    for (int i = 0; i < 2; i++) { 
-      // try secure then insecure
-      File f = fp.open(filePath, FILE_WRITE);
-      if (f) {
+    snprintf(downloadURL, 150, "%s%s", GITHUB_PATH, filePath);
+    File f = fp.open(filePath, FILE_WRITE);
+    if (f) {
+      WiFiClientSecure wclient;
+      if (remoteServerConnect(wclient, GITHUB_HOST, HTTPS_PORT, git_rootCACertificate)) {
         HTTPClient https;
-        WiFiClientSecure wclient;
-        if (!i) wclient.setCACert(git_rootCACertificate);
-        else wclient.setInsecure(); // not SSL      
-        if (!https.begin(wclient, downloadURL)) {
-          char errBuf[100];
-          wclient.lastError(errBuf, 100);
-          checkMemory();
-          LOG_ERR("Could not connect to github server, err: %s", errBuf);
-        } else {
+        if (https.begin(wclient, GITHUB_HOST, HTTPS_PORT, downloadURL, true)) {
           LOG_INF("Downloading %s from %s", filePath, downloadURL);    
           int httpCode = https.GET();
           int fileSize = 0;
@@ -74,40 +38,38 @@ static bool wgetFile(const char* githubURL, const char* filePath, bool restart =
             fileSize = https.writeToStream(&f);
             if (fileSize <= 0) {
               httpCode = 0;
-              LOG_ERR("Download failed: writeToStream");
-            } else LOG_INF("Downloaded %s, size %d bytes", filePath, fileSize);       
-          } else LOG_ERR("Download failed, error: %s", https.errorToString(httpCode).c_str());    
+              LOG_WRN("Download failed: writeToStream");
+            } else LOG_INF("Downloaded %s, size %s", filePath, fmtSize(fileSize));       
+          } else LOG_WRN("Download failed, error: %s", https.errorToString(httpCode).c_str());    
           https.end();
           f.close();
-          if (httpCode == HTTP_CODE_OK) break;
-          else fp.remove(filePath);
+          if (httpCode == HTTP_CODE_OK) {
+            if (!strcmp(filePath, CONFIG_FILE_PATH)) doRestart("config file downloaded");
+            res = true;
+          } else {
+            LOG_WRN("HTTP Get failed with code: %u", httpCode);
+            fp.remove(filePath);
+          }
         }
-      } else {
-        LOG_ERR("Open failed: %s", filePath);
-        return false;
-      }
-    } 
-    if (restart) {
-      if (loadConfig()) doRestart("config file downloaded");
-    }
-  } 
-  return true;
+      } 
+      remoteServerClose(wclient);
+    } else LOG_WRN("Open failed: %s", filePath);
+  } else res = true;
+  return res;
 }
 
 bool checkDataFiles() {
   // Download any missing data files
-  if (!fp.exists(DATA_DIR)) fp.mkdir(DATA_DIR);
   bool res = false;
-  if (strlen(GITHUB_URL)) {
-    res = wgetFile(GITHUB_URL, CONFIG_FILE_PATH, true);
-    if (res) wgetFile(GITHUB_URL, COMMON_JS_PATH);
-    if (res) wgetFile(GITHUB_URL, INDEX_PAGE_PATH);        
-    if (res) appDataFiles();
-  }
+  if (strlen(GITHUB_PATH)) {
+    res = wgetFile(COMMON_JS_PATH); 
+    if (res) res = wgetFile(INDEX_PAGE_PATH); 
+    if (res) res = appDataFiles(); 
+  } else res = true; // no download needed
   return res;
 }
 
-const char* defaultPage_html = R"~(
+const char* setupPage_html = R"~(
 <!doctype html>
 <html>
 <head>
@@ -153,64 +115,77 @@ function Config(){
 </html>
 )~";
 
-// in case app html is not present, or corrupted
-// <ip address>/web?OTA.htm
 const char* otaPage_html = R"~(
 <html>
   <head>
-    <title>Built In OTA</title>
+    <title>OTA</title>
+    <style>
+      html body {height: 100%;}
+      body {
+        font-family: Helvetica  !important;
+        background: #181818;
+        color: WhiteSmoke;
+        font-size: 1rem;; 
+      }
+    </style>
   </head>
   <body>
-    <br></br>
+    <br>
+    <h3>Upload data file or bin file to ESP32</h3>
+    <br>
+    <a href="javascript:history.back()" style="color: WhiteSmoke;">Go Back</a>
+    <br><br><br>
     <form id="upload_form" enctype="multipart/form-data" method="post">
-      <input type="file" name="file1" id="file1" onchange="uploadFile()"><br>
-      <br></br>
-      <progress id="progressBar" value="0" max="100" style="width:300px;"></progress>
+      <input type="file" name="otafile" id="otafile" onchange="otaUploadFile()"><br>
+      <br>
+      <progress id="progressOta" value="0" max="100" style="width:200px;"></progress>%
       <h3 id="status"></h3>
       <p id="loaded_n_total"></p>
     </form>
+    
     <script>
-      const webPort = !window.location.port ? "80" : window.location.port;
-      const otaPort = String(+webPort + 1);
-      const otaServer = 'http://' + document.location.hostname + ':' + otaPort;
+      const defaultPort = window.location.protocol == 'http:' ? 80 : 443; 
+      const webPort = !window.location.port ? defaultPort : window.location.port; // in case alternative ports specified
+      const webServer = window.location.protocol + '//' + document.location.hostname + ':' + webPort;
       const $ = document.querySelector.bind(document);
-     
-      async function uploadFile() {
-        // notify server to start ota task
-        const response = await fetch('/control?startOTA=1');
+   
+      async function otaUploadFile() {
+        // notify server to start ota 
+        let file = $("#otafile").files[0];
+        const response = await fetch('/control?startOTA=' + file.name);
         if (response.ok) {
           // submit file for uploading
-          let file = $("#file1").files[0];
-          let formdata = new FormData();
-          formdata.append("file1", file);
-          let ajax = new XMLHttpRequest();
-          ajax.upload.addEventListener("progress", progressHandler, false);
-          ajax.addEventListener("load", completeHandler, false);
-          ajax.addEventListener("error", errorHandler, false);
-          ajax.addEventListener("abort", abortHandler, false);
-          ajax.open("POST", otaServer + '/upload');
-          ajax.send(formdata);
-        } else console.log(response.status); 
+          let xhr = new XMLHttpRequest();
+          xhr.upload.addEventListener("progress", progressHandler, false);
+          xhr.addEventListener("load", completeHandler, false);
+          xhr.addEventListener("error", errorHandler, false);
+          xhr.addEventListener("abort", abortHandler, false);
+          xhr.open("POST", webServer +  '/upload');
+          xhr.send(file);
+        } else alert(response.status + ": " + response.statusText); 
       }
 
-       function progressHandler(event) {
+      function progressHandler(event) {
         $("#loaded_n_total").innerHTML = "Uploaded " + event.loaded + " of " + event.total + " bytes";
         let percent = (event.loaded / event.total) * 100;
-        $("#progressBar").value = Math.round(percent);
+        $("#progressOta").value = Math.round(percent);
         $("#status").innerHTML = Math.round(percent) + "% transferred";
         if (event.loaded  == event.total) $("#status").innerHTML = 'Uploaded, wait for completion result';
       }
 
       function completeHandler(event) {
         $("#status").innerHTML = event.target.responseText;
+        $("#progressOta").value = 0;
       }
 
       function errorHandler(event) {
         $("#status").innerHTML = "Upload Failed";
+        $("#progressOta").value = 0;
       }
 
       function abortHandler(event) {
         $("#status").innerHTML = "Upload Aborted";
+        $("#progressOta").value = 0;
       }
     </script>
   </body>

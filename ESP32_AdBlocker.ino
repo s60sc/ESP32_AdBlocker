@@ -19,13 +19,20 @@
 
 #include "appGlobals.h"
 
-static bool startedUp = false;
-
 void setup() { 
   logSetup();
-  if (!psramFound()) sprintf(startupFailure, "Startup Failure: Need PSRAM to be enabled");
-  startStorage();
-  loadConfig();
+  // prep SD card storage
+  if (startStorage()) {
+    // Load saved user configuration
+    if (loadConfig()) {
+      if (psramFound()) {
+        LOG_INF("PSRAM size: %s", fmtSize(esp_spiram_get_size()));
+        if (esp_spiram_get_size() < 3 * ONEMEG) 
+          snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Insufficient PSRAM for app");
+      }
+      else snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Need PSRAM to be enabled");
+    }
+  }
 
 #ifdef DEV_ONLY
   devSetup();
@@ -38,14 +45,14 @@ void setup() {
   if (strlen(startupFailure)) LOG_ERR("%s", startupFailure);
   else {
     // start rest of services
-    checkMemory();
     appSetup();
-    LOG_INF(APP_NAME " v" APP_VER " ready ...");
-    startedUp = true;
     checkMemory();
   }
 }
 
 void loop() {
-  vTaskDelete(NULL);
+  // confirm not blocked in setup
+  LOG_INF("=============== Total tasks: %u ===============\n", uxTaskGetNumberOfTasks() - 1);
+  delay(1000);
+  vTaskDelete(NULL); // free 8k ram
 }

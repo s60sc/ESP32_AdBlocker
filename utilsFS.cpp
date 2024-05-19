@@ -1,13 +1,14 @@
 // General purpose SD card and flash storage utilities
 //
-// s60sc 2021, 2022
+// s60sc 2021, 2022 
 
 #include "appGlobals.h"
 
 // Storage settings
 int sdMinCardFreeSpace = 100; // Minimum amount of card free Megabytes before sdFreeSpaceMode action is enabled
-int sdFreeSpaceMode = 1; // 0 - No Check, 1 - Delete oldest dir, 2 - Upload to ftp and then delete folder on SD 
+int sdFreeSpaceMode = 1; // 0 - No Check, 1 - Delete oldest dir, 2 - Upload oldest dir to FTP/HFS and then delete on SD 
 bool formatIfMountFailed = true; // Auto format the file system if mount failed. Set to false to not auto format.
+static fs::FS fp = STORAGE;
 
 // hold sorted list of filenames/folders names in order of newest first
 static std::vector<std::string> fileVec;
@@ -15,8 +16,8 @@ static auto currentDir = "/~current";
 static auto previousDir = "/~previous";
 static char fsType[10] = {0};
 
-#ifdef INCLUDE_SD
 static void infoSD() {
+#if !(CONFIG_IDF_TARGET_ESP32C3)
   uint8_t cardType = SD_MMC.cardType();
   if (cardType == CARD_NONE) LOG_WRN("No SD card attached");
   else {
@@ -24,17 +25,14 @@ static void infoSD() {
     if (cardType == CARD_MMC) strcpy(typeStr, "MMC");
     else if (cardType == CARD_SD) strcpy(typeStr, "SDSC");
     else if (cardType == CARD_SDHC) strcpy(typeStr, "SDHC");
-
-    uint64_t cardSize, totBytes, useBytes = 0;
-    cardSize = SD_MMC.cardSize() / ONEMEG;
-    totBytes = SD_MMC.totalBytes() / ONEMEG;
-    useBytes = SD_MMC.usedBytes() / ONEMEG;
-    LOG_INF("SD card type %s, Size: %lluMB, Used space: %lluMB, of total: %lluMB",
-             typeStr, cardSize, useBytes, totBytes);
+    LOG_INF("SD card type %s, Size: %s", typeStr, fmtSize(SD_MMC.cardSize()));
   }
+#endif
 }
 
 static bool prepSD_MMC() {
+  bool res = false;
+#if !(CONFIG_IDF_TARGET_ESP32C3)
   /* open SD card in MMC 1 bit mode
      MMC4  MMC1  ESP32 ESP32S3
       D2          12
@@ -44,16 +42,16 @@ static bool prepSD_MMC() {
       D0   D0     2     40
       D1          4
   */
-  bool res = false;
-  if (psramFound()) heap_caps_malloc_extmem_enable(5); // small number to force vector into psram
+  if (psramFound()) heap_caps_malloc_extmem_enable(MIN_RAM); // small number to force vector into psram
   fileVec.reserve(1000);
-  if (psramFound()) heap_caps_malloc_extmem_enable(4096);
+  if (psramFound()) heap_caps_malloc_extmem_enable(MAX_RAM);
 #if CONFIG_IDF_TARGET_ESP32S3
 #if !defined(SD_MMC_CLK)
-  LOG_ERR("SD card pins not defined");
-  res = false;
-#endif
+  LOG_WRN("SD card pins not defined");
+  return false;
+#else
   SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+#endif
 #endif
   
   res = SD_MMC.begin("/sdcard", true, formatIfMountFailed);
@@ -62,42 +60,44 @@ static bool prepSD_MMC() {
   digitalWrite(4, 0); // set lamp pin fully off as sd_mmc library still initialises pin 4 in 1 line mode
 #endif 
   if (res) {
-    SD_MMC.mkdir(DATA_DIR);
+    fp.mkdir(DATA_DIR);
     infoSD();
     res = true;
   } else {
-    LOG_ERR("SD card mount failed");
+    LOG_WRN("SD card mount failed");
     res = false;
   }
+#endif
   return res;
 }
-#endif
 
 static void listFolder(const char* rootDir) { 
   // list contents of folder
-  LOG_INF("Sketch size %dkB", ESP.getSketchSize() / 1024);    
-  File root = STORAGE.open(rootDir);
+  LOG_INF("Sketch size %s", fmtSize(ESP.getSketchSize()));    
+  File root = fp.open(rootDir);
   File file = root.openNextFile();
   while (file) {
-    LOG_INF("File: %s, size: %u", file.path(), file.size());
+    LOG_INF("File: %s, size: %s", file.path(), fmtSize(file.size()));
     file = root.openNextFile();
   }
-  LOG_INF("%s: Total bytes %lld, Used bytes %lld", fsType, (uint64_t)(STORAGE.totalBytes()), (uint64_t)(STORAGE.usedBytes())); 
+  char totalBytes[20];
+  strcpy(totalBytes, fmtSize(STORAGE.totalBytes()));
+  LOG_INF("%s: %s used of %s", fsType, fmtSize(STORAGE.usedBytes()), totalBytes);
 }
 
 bool startStorage() {
   // start required storage device (SD card or flash file system)
   bool res = false;
-#ifdef INCLUDE_SD  
+#if !(CONFIG_IDF_TARGET_ESP32C3)
   if ((fs::SDMMCFS*)&STORAGE == &SD_MMC) {
     strcpy(fsType, "SD_MMC");
     res = prepSD_MMC();
     if (res) listFolder(DATA_DIR);
-    else sprintf(startupFailure, "Startup Failure: Check SD card inserted");
+    else snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Check SD card inserted");
+    debugMemory("startStorage");
     return res; 
   }
 #endif
-
   // One of SPIFFS or LittleFS
   if (!strlen(fsType)) {
 #ifdef _SPIFFS_H_
@@ -110,9 +110,8 @@ bool startStorage() {
     if ((fs::LittleFSFS*)&STORAGE == &LittleFS) {
       strcpy(fsType, "LittleFS");
       res = LittleFS.begin(formatIfMountFailed);
-      ramLogPrep();
       // create data folder if not present
-      if (res && !LittleFS.exists(DATA_DIR)) LittleFS.mkdir(DATA_DIR);
+      if (res) LittleFS.mkdir(DATA_DIR);
     }
 #endif
     if (res) {  
@@ -121,16 +120,16 @@ bool startStorage() {
       listFolder(rootDir);
     }
   } else {
-    sprintf(startupFailure, "Failed to mount %s", fsType);  
+    snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Failed to mount %s", fsType);  
     dataFilesChecked = true; // disable setupAssist as no file system
   }
   debugMemory("startStorage");
   return res;
 }
 
-void getOldestDir(char* oldestDir) {
+static void getOldestDir(char* oldestDir) {
   // get oldest folder by its date name
-  File root = STORAGE.open("/");
+  File root = fp.open("/");
   File file = root.openNextFile();
   if (file) strcpy(oldestDir, file.path()); // initialise oldestDir
   while (file) {
@@ -142,37 +141,33 @@ void getOldestDir(char* oldestDir) {
   }
 }
 
-void inline getFileDate(File file, char* fileDate) {
-  // get creation date of file as string
+void inline getFileDate(File& file, char* fileDate) {
+  // get last write date of file as string
   time_t writeTime = file.getLastWrite();
   struct tm lt;
   localtime_r(&writeTime, &lt);
   strftime(fileDate, sizeof(fileDate), "%Y-%m-%d %H:%M:%S", &lt);
 }
 
-size_t getFreeSpace() {
-  return STORAGE.totalBytes() - STORAGE.usedBytes();
-}
-
-bool checkFreeSpace() { 
+bool checkFreeStorage() { 
   // Check for sufficient space on storage
   bool res = false;
   size_t freeSize = (size_t)((STORAGE.totalBytes() - STORAGE.usedBytes()) / ONEMEG);
   if (!sdFreeSpaceMode && freeSize < sdMinCardFreeSpace) 
-    LOG_ERR("Space left %uMB is less than minimum %uMB", freeSize, sdMinCardFreeSpace);
+    LOG_WRN("Space left %uMB is less than minimum %uMB", freeSize, sdMinCardFreeSpace);
   else {
     // delete to make space
     while (freeSize < sdMinCardFreeSpace) {
       char oldestDir[FILE_NAME_LEN];
       getOldestDir(oldestDir);
       LOG_WRN("Deleting oldest folder: %s %s", oldestDir, sdFreeSpaceMode == 2 ? "after uploading" : "");
-#ifdef INCLUDE_FTP 
-      if (sdFreeSpaceMode == 2) ftpFileOrFolder(oldestDir); // Upload and then delete oldest folder
+#if INCLUDE_FTP_HFS
+      if (sdFreeSpaceMode == 2) fsStartTransfer(oldestDir); // transfer and then delete oldest folder
 #endif
       deleteFolderOrFile(oldestDir);
       freeSize = (size_t)((STORAGE.totalBytes() - STORAGE.usedBytes()) / ONEMEG);
     }
-    LOG_INF("Storage free space: %uMB", freeSize);
+    LOG_INF("Storage free space: %s", fmtSize(STORAGE.totalBytes() - STORAGE.usedBytes()));
     res = true;
   }
   return res;
@@ -218,17 +213,17 @@ bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* 
     // ignore leading '/' if not the only character
     bool returnDirs = strlen(fileName) > 1 ? (strchr(fileName+1, '/') == NULL ? false : true) : true; 
     // open relevant folder to list contents
-    File root = STORAGE.open(fileName);
+    File root = fp.open(fileName);
     if (strlen(fileName)) {
-      if (!root) LOG_ERR("Failed to open directory %s", fileName);
-      if (!root.isDirectory()) LOG_ERR("Not a directory %s", fileName);
+      if (!root) LOG_WRN("Failed to open directory %s", fileName);
+      else if (!root.isDirectory()) LOG_WRN("Not a directory %s", fileName);
       LOG_DBG("Retrieving %s in %s", returnDirs ? "folders" : "files", fileName);
     }
     
     // build relevant option list
     strcpy(jsonBuff, returnDirs ? "{" : "{\"/\":\".. [ Up ]\",");            
     File file = root.openNextFile();
-    if (psramFound()) heap_caps_malloc_extmem_enable(5); // small number to force vector into psram
+    if (psramFound()) heap_caps_malloc_extmem_enable(MIN_RAM); // small number to force vector into psram
     while (file) {
       if (returnDirs && file.isDirectory() && strstr(DATA_DIR, file.name()) == NULL) {  
         // build folder list, ignore data folder
@@ -239,14 +234,14 @@ bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* 
       if (!returnDirs && !file.isDirectory()) {
         // build file list
         if (strstr(file.name(), extension) != NULL) {
-          sprintf(partJson, "\"%s\":\"%s %0.1fMB\",", file.path(), file.name(), (float)file.size() / ONEMEG);
+          sprintf(partJson, "\"%s\":\"%s %s\",", file.path(), file.name(), fmtSize(file.size()));
           fileVec.push_back(std::string(partJson));
           noEntries = false;
         }
       }
       file = root.openNextFile();
     }
-    if (psramFound()) heap_caps_malloc_extmem_enable(4096);
+    if (psramFound()) heap_caps_malloc_extmem_enable(MAX_RAM);
   }
   
   if (noEntries && !hasExtension) sprintf(jsonBuff, "{\"/\":\"List folders\",\"%s\":\"Go to current (today)\",\"%s\":\"Go to previous (yesterday)\"}", currentDir, previousDir);
@@ -256,7 +251,7 @@ bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* 
     for (auto fileInfo : fileVec) {
       if (strlen(jsonBuff) + strlen(fileInfo.c_str()) < jsonBuffLen) strcat(jsonBuff, fileInfo.c_str());
       else {
-        LOG_ERR("Too many folders/files to list %u+%u in %u bytes", strlen(jsonBuff), strlen(partJson), jsonBuffLen);
+        LOG_WRN("Too many folders/files to list %u+%u in %u bytes", strlen(jsonBuff), strlen(partJson), jsonBuffLen);
         break;
       }
     }
@@ -266,19 +261,31 @@ bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* 
   return hasExtension;
 }
 
+static void deleteOthers(const char* baseFile) {
+#ifdef ISCAM
+  // delete corresponding csv and srt files if exist
+  char otherDeleteName[FILE_NAME_LEN];
+  strcpy(otherDeleteName, baseFile);
+  changeExtension(otherDeleteName, CSV_EXT);
+  if (STORAGE.remove(otherDeleteName)) LOG_INF("File %s deleted", otherDeleteName);
+  changeExtension(otherDeleteName, SRT_EXT);
+  if (STORAGE.remove(otherDeleteName)) LOG_INF("File %s deleted", otherDeleteName);
+#endif  
+}
+
 void deleteFolderOrFile(const char* deleteThis) {
   // delete supplied file or folder, unless it is a reserved folder
   char fileName[FILE_NAME_LEN];
   setFolderName(deleteThis, fileName);
-  File df = STORAGE.open(fileName);
+  File df = fp.open(fileName);
   if (!df) {
-    LOG_ERR("Failed to open %s", fileName);
+    LOG_WRN("Failed to open %s", fileName);
     return;
   }
   if (df.isDirectory() && (strstr(fileName, "System") != NULL 
       || strstr("/", fileName) != NULL)) {
     df.close();   
-    LOG_ERR("Deletion of %s not permitted", fileName);
+    LOG_WRN("Deletion of %s not permitted", fileName);
     delay(1000); // reduce thrashing on same error
     return;
   }  
@@ -292,9 +299,10 @@ void deleteFolderOrFile(const char* deleteThis) {
       strcpy(filepath, file.path()); 
       if (file.isDirectory()) LOG_INF("  DIR : %s", filepath);
       else {
-        int fileSize = file.size() / ONEMEG;
+        size_t fSize = file.size();
         file.close();
-        LOG_INF("  FILE : %s Size : %dMB %sdeleted", filepath, fileSize, STORAGE.remove(filepath) ? "" : "not ");
+        LOG_INF("  FILE : %s Size : %s %sdeleted", filepath, fmtSize(fSize), STORAGE.remove(filepath) ? "" : "not ");
+        deleteOthers(filepath);
       }
       file = df.openNextFile();
     }
@@ -302,7 +310,107 @@ void deleteFolderOrFile(const char* deleteThis) {
     if (df.isDirectory()) LOG_ALT("Folder %s %sdeleted", fileName, STORAGE.rmdir(fileName) ? "" : "not ");
     else df.close();
   } else {
+    // delete individual file
     df.close();
     LOG_ALT("File %s %sdeleted", deleteThis, STORAGE.remove(deleteThis) ? "" : "not ");  //Remove the file
+    deleteOthers(deleteThis);
   }
+}
+
+/************** uncompressed tarball **************/
+
+#define BLOCKSIZE 512
+
+static esp_err_t writeHeader(File& inFile, httpd_req_t* req) {  
+  char tarHeader[BLOCKSIZE] = {}; // 512 bytes tar header
+  strncpy(tarHeader, inFile.name(), 99); // name of file
+  sprintf(tarHeader + 100, "0000666"); // file permissions stored as ascii octal number
+  sprintf(tarHeader + 124, "%011o", inFile.size()); // length of file in bytes as 6 digit ascii octal number
+  memcpy(tarHeader + 148, "        ", 8); // init as 8 spaces to calc checksum
+  tarHeader[156] = '0'; // type of entry - 0 for ordinary file
+  strcpy(tarHeader + 257, "ustar"); // magic
+  memcpy(tarHeader + 263, "00", 2); // version as two 0 digits
+
+  // Calculate and set the checksum
+  uint32_t checksum = 0;
+  for (const auto& ch : tarHeader) checksum += ch;
+  sprintf(tarHeader + 148, "%06o", checksum); // six digit octal number with leading zeroes followed by a NUL and then a space.
+
+  return httpd_resp_send_chunk(req, tarHeader, BLOCKSIZE);
+}
+
+esp_err_t downloadFile(File& df, httpd_req_t* req) {
+  // download file as attachment, required file name in inFileName
+  // setup download header, create zip file if required, and download file
+  esp_err_t res = ESP_OK;
+  bool needZip = false;
+  char downloadName[FILE_NAME_LEN];
+  strcpy(downloadName, df.name());
+  size_t downloadSize = df.size();
+  char fsSavePath[FILE_NAME_LEN];
+  strcpy(fsSavePath, inFileName);
+#ifdef ISCAM
+  changeExtension(fsSavePath, CSV_EXT);
+  
+  // check if ancillary files present
+  needZip = STORAGE.exists(fsSavePath);
+  const char* extensions[3] = {AVI_EXT, CSV_EXT, SRT_EXT};
+  if (needZip) {
+    // ancillary files, calculate total size for http header
+    downloadSize = 0;
+    for (const auto& ext : extensions) {
+      changeExtension(fsSavePath, ext);
+      File inFile = STORAGE.open(fsSavePath, FILE_READ);
+      if (inFile) {
+        // round up file size to 512 byte boundary and add header size
+        downloadSize += (((inFile.size() + BLOCKSIZE - 1) / BLOCKSIZE) * BLOCKSIZE) + BLOCKSIZE;
+        strcpy(downloadName, inFile.name());
+        inFile.close();
+      }
+    }
+    downloadSize += BLOCKSIZE * 2; // end of tarball marker
+    changeExtension(downloadName, "zip"); 
+  } 
+#endif 
+
+  // create http header
+  LOG_INF("Download file: %s, size: %s", downloadName, fmtSize(downloadSize));
+  httpd_resp_set_type(req, "application/octet-stream");
+  // header field values must remain valid until first send
+  char contentDisp[IN_FILE_NAME_LEN + 50];
+  snprintf(contentDisp, sizeof(contentDisp) - 1, "attachment; filename=%s", downloadName);
+  httpd_resp_set_hdr(req, "Content-Disposition", contentDisp);
+  char contentLength[10];
+  snprintf(contentLength, sizeof(contentLength) - 1, "%i", downloadSize);
+  httpd_resp_set_hdr(req, "Content-Length", contentLength);
+
+  if (needZip) {
+#ifdef ISCAM
+    // package avi file and ancillary files into uncompressed tarball
+    for (const auto& ext : extensions) {
+      changeExtension(fsSavePath, ext);
+      File inFile = STORAGE.open(fsSavePath, FILE_READ);
+      if (inFile) {
+        res = writeHeader(inFile, req);
+        if (res == ESP_OK) res = sendChunks(inFile, req, false);
+        if (res == ESP_OK) {
+          // write end of file filler
+          size_t remainingBytes = inFile.size() % BLOCKSIZE;
+          if (remainingBytes) {
+            char zeroBlock[BLOCKSIZE - remainingBytes] = {};
+            res = httpd_resp_send_chunk(req, zeroBlock, sizeof(zeroBlock));
+          }
+          inFile.close();
+        }
+      }
+    }
+
+    // Write two blocks filled with zeros to mark the end of the archive
+    char zeroBlock[BLOCKSIZE] = {};
+    res = httpd_resp_send_chunk(req, zeroBlock, BLOCKSIZE);
+    res = httpd_resp_send_chunk(req, zeroBlock, BLOCKSIZE);
+    res = httpd_resp_sendstr_chunk(req, NULL);
+#endif
+  } else res = sendChunks(df, req); // send AVI
+  return res;
 }
