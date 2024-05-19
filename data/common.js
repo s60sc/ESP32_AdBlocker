@@ -4,12 +4,14 @@
         /*********** initialisation  ***********/
 
         'use strict'
-        
+             
+        const isSecure = window.location.protocol == 'https:' ? true : false;
+        const defaultPort = window.location.protocol == 'https:' ? 443 : 80;
+        const webPort = !window.location.port ? defaultPort : window.location.port;
         const baseHost = document.location.hostname;
-        const webHost = "http://" + baseHost;
+        const webHost = window.location.protocol + "//" + baseHost;
         const webServer = webHost + ":" + webPort;
-        const wsServer = "ws://" + baseHost + ":" + webPort + "/ws";
-        const otaServer = webHost + ":" + otaPort;
+        const wsServer = (isSecure ? "wss" : "ws") + "://" + baseHost + ":" + webPort + "/ws";
 
         let ws = null;
         let hbTimer = null;
@@ -21,8 +23,12 @@
         const ID = 1;
         const $ = document.querySelector.bind(document);
         const $$ = document.querySelectorAll.bind(document);
-        const baseFontSize = parseInt(window.getComputedStyle($('body')).fontSize); 
+        const baseFontSize = parseInt(getComputedStyle(document.documentElement).fontSize);
         const root = getComputedStyle($(':root'));
+        const bigThumbSize = parseFloat(root.getPropertyValue('--bigThumbSize')) * baseFontSize;
+        const smallThumbSize = parseFloat(root.getPropertyValue('--smallThumbSize')) * baseFontSize;
+        let isImmed = false;
+        let logType = appLogInit;
         
         async function initialise() {
           try {
@@ -31,9 +37,9 @@
             addRangeData();
             if (doCustomInit) customInit();
             setListeners();
-            if (doInitWebSocket) initWebSocket();
             doLoadStatus ? loadStatus("") : configStatus(false); 
             if (doRefreshTimer && hbTimer == null) setTimeout(refreshStatus, refreshInterval);
+            if (doInitWebSocket) initWebSocket();
           } catch (error) {
             showLog("Error: " + error.message);
             alert("Error: " + error.message);
@@ -44,13 +50,14 @@
               
         // define websocket handling
         function initWebSocket() {
-          loggingOn = true;
+          if (ws == null) {
+            ws = new WebSocket(wsServer);
+            ws.onopen = onOpen;
+            ws.onclose = onClose;
+            ws.onmessage = onMessage; 
+            ws.onerror = onError;
+          }
           showLog("Connect to: " + wsServer);
-          ws = new WebSocket(wsServer);
-          ws.onopen = onOpen;
-          ws.onclose = onClose;
-          ws.onmessage = onMessage; 
-          ws.onerror = onError;
         }
           
         // periodically check that connection is still up and get status
@@ -92,7 +99,7 @@
           // event.codes:
           //   1006 if server not available, or another web page is already open
           //   1005 if closed from app
-          if (event.code == 1006) $('#wsMode').checked = false;
+          if (event.code == 1006) {}
           else if (event.code != 1005) initWebSocket(); // retry if any other reason
         }
         
@@ -106,8 +113,8 @@
       
         function openTab(e) {
           // control tab viewing
-          $$('.tabcontent').forEach(el => {el.style.display = "none";});
-          $('#' + e.name).style.display = "inherit";
+          $$('.tabcontent').forEach(el => { el.style.display = "none"; });
+          $('#' + e.name).style.display = "inherit";  
           $$('.tablinks').forEach(el => {el.classList.remove("active");});
           e.classList.add("active");
           try {
@@ -123,7 +130,7 @@
           else panel.style.display = "inherit";
         }
        
-        function rangeSlider(el, isPos = true, statusVal = null) {
+         function rangeSlider(el, isPos = true, statusVal = null) {
           // update range slider marker position and value 
           const rangeVal = el.parentElement.children.rangeVal;
           if (statusVal != null) rangeVal.innerHTML = statusVal;
@@ -144,20 +151,35 @@
             rangeVal.innerHTML = el.value;
           }
           el.setAttribute('value', rangeVal.innerHTML);
-                    
-          // position for range marker
-          const rangeFontSize = parseInt(window.getComputedStyle($('input[type=range]')).fontSize); 
-          let position = (el.clientWidth - rangeFontSize) * (el.value - minval) / (maxval - minval); 
-          position += el.offsetLeft + (rangeFontSize / 2);
-          rangeVal.style.left = 'calc('+position+'px)';
+
+          // position of range marker relative to slider thumb
+          const rangeThumbSize = el.classList.contains('bigThumb') ? bigThumbSize : smallThumbSize;
+          let markerRange = el.offsetWidth - rangeThumbSize;
+          let position = markerRange * (el.value - minval) / (maxval - minval); 
+
+          // calculate absolute marker position for orientation of slider
+          if (el.classList.contains('vertical')) {
+            rangeVal.style.top = el.offsetTop + markerRange/2 - position + 'px';
+            rangeVal.style.left = el.offsetLeft + markerRange/2 - (rangeVal.offsetWidth - rangeThumbSize)/2 + 'px'; // 
+          } else if (el.classList.contains('vertInv')) {
+            rangeVal.style.top = el.offsetTop + position - markerRange/2 + 'px';
+            rangeVal.style.left = el.offsetLeft + markerRange/2 - (rangeVal.offsetWidth - rangeThumbSize)/2 + 'px';
+          } else rangeVal.style.left = el.offsetLeft + position - (rangeVal.offsetWidth - rangeThumbSize)/2 + 'px'; // default horizontal
+
         }
         
-        let observer = new IntersectionObserver ( function(entries) {
+        let rangeObserver = new IntersectionObserver ( function(entries) {
           // recalc each range slider that becomes visible
             entries.forEach(el => { if (el.isIntersecting === true) rangeSlider(el['target']); });
           }, { threshold: [0] }
         );
-        $$('input[type=range]').forEach(el => { observer.observe(el); });
+        $$('input[type=range]').forEach(el => { rangeObserver.observe(el); });
+        
+        let logObserver = new IntersectionObserver (entries => {
+          // refresh log when becomes visible
+          entries.forEach(entry => { if (entry.isIntersecting === true) getLog(); });
+        }); 
+        logObserver.observe($('#appLog'));
         
         function addButtons() {
           // add commmon buttons to relevant sections
@@ -172,9 +194,13 @@
          function addRangeData() {
           // add labelling for rangle sliders
           $$('input[type="range"]').forEach(el => {
-            if (!isDefined(el.parentElement.children.rangeMin)) el.insertAdjacentHTML("beforebegin", '<div name="rangeMin"/>'+el.min+'</div>');
-            el.insertAdjacentHTML("afterend", '<div name="rangeVal">'+el.value+'</div>');
-            if (!isDefined(el.parentElement.children.rangeMax)) el.insertAdjacentHTML("afterend", '<div name="rangeMax"/>'+el.max+'</div>');
+            if (el.classList.contains('vertical')) el.style.transform = 'rotate(270deg)'; 
+            else if (el.classList.contains('vertInv')) el.style.transform = 'rotate(90deg)';
+            if (!el.classList.contains('ignore')) {
+              if (!isDefined(el.parentElement.children.rangeMin)) el.insertAdjacentHTML("beforebegin", '<div name="rangeMin"/>'+el.min+'</div>'); 
+              el.insertAdjacentHTML("afterend", '<div name="rangeVal">'+el.value+'</div>');
+              if (!isDefined(el.parentElement.children.rangeMax)) el.insertAdjacentHTML("afterend", '<div name="rangeMax"/>'+el.max+'</div>');
+            }
             rangeSlider(el, false);
           });
         } 
@@ -188,7 +214,7 @@
             updateData = await response.json();
             updateStatus();
             await sleep(1000);
-          } else console.log(response.status); 
+          } else alert(response.status + ": " + response.statusText);  
         }
         
         function refreshStatus() {
@@ -229,7 +255,7 @@
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(statusData),
           });
-          if (!response.ok) console.log(response.status);
+          if (!response.ok) alert(response.status + ": " + response.statusText); 
         } 
         
         /*********** utility functions ***********/
@@ -249,6 +275,22 @@
           return new Promise(resolve => setTimeout(resolve, ms));
         }
         
+        async function fetchRetry(url, options, interval, timeout) {
+          let response;
+          let retries = Math.ceil(timeout / interval);
+          while (retries--) {
+            try {
+              response = await fetch(url, options);
+              if (response.ok) {
+                sleep(interval);
+                return response;
+              }
+            } catch {}
+            await new Promise((resolve) => setTimeout(resolve, interval));
+          }
+          return response;
+        }
+              
         function hide(el) {
           el.classList.add('hidden')
           el.style.display = "none";
@@ -269,8 +311,12 @@
           el.disabled = false;
         }
         
-        function isActive(key) {
-          return key.classList.contains('active') ? true : false;
+        function isActive(el) {
+          return el.classList.contains('active') ? true : false;
+        }
+        
+        function isHidden(el) {
+           return el.classList.contains("hidden") ? true : false;
         }
         
         function isDefined(variable) {
@@ -293,37 +339,48 @@
         function dbg(msg) {
           console.log('***** '+msg);
         }
+        
+        function dbgTrail(msg) {
+          // get trail of function calls
+          dbg(msg);
+          const stackTrace = new Error().stack;
+          console.log("Function call trail: " + stackTrace);
+        }
 
-        function clearRAMlog() {
-          if (window.confirm('This will delete all log entries on RAM. Are you sure ?')) { 
-            $('#ramlog').innerHTML = "";
-            sendControl("resetLog", "1");
+        function clearLog() {
+          if (window.confirm('This will delete all log entries. Are you sure ?')) { 
+            $('#appLog').innerHTML = "";
+            if (logType != 1) sendControl("resetLog", "1");
           }
         }
         
-        async function getRAMlog() {
-          // request display of RAM log file
-          const log = $('#ramlog');
+        async function getLog() {
+          // request display of stored log file
+          const log = $('#appLog');
           log.innerHTML = "";
-          const response = await fetch(encodeURI(webServer + "/control?displayLog=1"));
-          if (response.ok) {
-            const logData = await response.text();
-            let start = 0;
-            const loadNextLine = () => {
-              const index = logData.indexOf("\n", start);
-              if (index !== -1) {
-                log.innerHTML += colorise(logData.substring(start, index)) + '<br>';
-                start = index + 1;
-                // auto scroll log as loaded
-                const bottom = 2 * baseFontSize;// 2 lines
-                const pos = Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop);
-                if (pos < bottom) log.scrollTop = log.scrollHeight;
-                // stop browser hanging while log is loaded
-                setTimeout(loadNextLine, 1); 
-              } 
-            };
-            loadNextLine(); 
-          } else console.log(response.status); 
+          loggingOn = (logType == 1) ? true : false; 
+          if (logType != 1) {
+            const requestURL = logType == 0 ? '/control?displayLog=1' : '/web?log.txt';
+            const response = await fetch(encodeURI(requestURL));
+            if (response.ok) {
+              const logData = await response.text();
+              let start = 0;
+              const loadNextLine = () => {
+                const index = logData.indexOf("\n", start);
+                if (index !== -1) {
+                  log.innerHTML += colorise(logData.substring(start, index)) + '<br>';
+                  start = index + 1;
+                  // auto scroll log as loaded
+                  const bottom = 2 * baseFontSize;// 2 lines
+                  const pos = Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop);
+                  if (pos < bottom) log.scrollTop = log.scrollHeight;
+                  // stop browser hanging while log is loaded
+                  setTimeout(loadNextLine, 1); 
+                } 
+              };
+              loadNextLine(); 
+            } else showAlert(response.status + ": " + response.statusText); 
+          }
         }
         
         function checkTime(value) {
@@ -332,6 +389,12 @@
           let nowUTC = Math.floor(now.getTime() / 1000);
           let timeDiff = Math.abs(nowUTC - value);  
           if (timeDiff > 5) sendControl("clockUTC", nowUTC); // 5 secs 
+        }
+        
+        function setTz(value) {
+          $('#timezone').value = value;
+          sendControl('timezone', value);
+          return false;
         }
         
         /*********** command processing ***********/
@@ -358,7 +421,7 @@
             const value = e.value.trim();
             const et = event.target.type;
             // input fields of given class 
-            if (e.nodeName == 'INPUT') {  
+            if (e.nodeName == 'INPUT') {
               if (e.type === 'checkbox') processStatus(ID, e.id, e.checked ? 1 : 0);
               else if (et === 'button' || et === 'file') processStatus(ID, e.id, 1);
               else if (et === 'radio') { if (e.checked) processStatus(ID, e.name, value); } 
@@ -370,7 +433,15 @@
           
           // input events
           document.addEventListener("input", function (event) {
-            if (event.target.type === 'range') rangeSlider(event.target);
+            const e = event.target;
+            if (e.type === 'range') {
+              rangeSlider(e);
+              // for element with class='immed' send data for processing immediately
+              if (e.classList.contains('immed')) {
+                isImmed = true;
+                processStatus(ID, e.id, e.parentElement.children.rangeVal.innerHTML);
+              }
+            }
           });
           
           // user command entered on Log tab
@@ -381,14 +452,20 @@
             }
           });
           
+          // move away from browser tab
+          document.addEventListener('visibilitychange', () => {
+            if (document.hidden) closedTab(false); // app specific
+          });
+          
           // recalc range marker positions 
           window.addEventListener('resize', function (event) {
             $$('input[type=range]').forEach(el => { rangeSlider(el); });
           });
           
-          // close web socket on leaving page
+          // close web socket on closing browser tab
           window.addEventListener('beforeunload', function (event) {
             if (ws) closeWS();
+            closedTab(true); // app specific 
           });   
           
         }
@@ -416,7 +493,7 @@
             let logText = fromUser ? "[" + date.toLocaleTimeString() + " Web] " : "";
             logText += reqStr;
             // append to log display 
-            let log = $('#applog');
+            let log = $('#appLog');
             log.innerHTML += colorise(logText) + '<br>';
             // auto scroll new entry unless scroll bar is not at bottom
             const bottom = 2 * baseFontSize;// 2 lines
@@ -451,18 +528,20 @@
         async function sendControl(key, value) {
           // send only  
           if (value != null) {
-            const response = await fetch(encodeURI("/control?" + key + "=" + value));
-            if (!response.ok) console.log(response.status);
+            const encodedValue = encodeURIComponent(value).replace(/#/g, '%23');
+            const response = await fetch(encodeURI("/control?" + key + "=") + encodedValue);
+            if (!response.ok) alert(response.status + ": " + response.statusText);
           }
         }
         
         async function sendControlResp(key, value) {
           // send and apply response
-          const response = await fetch(encodeURI("/control?" + key + "=" + value));
+          const encodedValue = encodeURIComponent(value).replace(/#/g, '%23');
+          const response = await fetch(encodeURI("/control?" + key + "=") + encodedValue);
           if (response.ok) {
             updateData = await response.json();
             updateStatus();
-          } else console.log(response.status); 
+          } else alert(response.status + ": " + response.statusText);  
         }
         
         /*********** config functions ***********/
@@ -474,12 +553,11 @@
             const configData = await response.json();
             // format received json into html table
             buildTable(configData, cfgGroup);
-          } else console.log(response.status); 
+          } else alert(response.status + ": " + response.statusText); 
         }
         
         function buildTable(configData, cfgGroup) {
           // dynamically build table of editable settings
-
           let divShowData = isDefined($('.config-group#Main'+cfgGroup)) ? $('.config-group#Main'+cfgGroup) : $('.config-group#Cfg');
           const retain = divShowData.id == 'Main'+cfgGroup ? true : false; // retain main page
           divShowData.innerHTML = "";
@@ -562,7 +640,7 @@
                       });
                     break;
                     default:
-                      console.log("Unhandled config input type " + value);
+                      alert("Unhandled config input type " + value);
                     break;
                   }
                   tr.insertCell(-1).innerHTML = inputHtml;
@@ -575,46 +653,231 @@
           } else cfgGroupNow = -1;
         }
 
-        /*********** OTA functions ***********/
-         
-        async function otaUploadFile() {
-          // notify server to start ota task
-          const response = await fetch('/control?startOTA=1');
-          if (response.ok) {
-            // submit file for uploading
-            let file = $("#otafile").files[0];
-            let formdata = new FormData();
-            formdata.append("otafile", file);
-            let ajax = new XMLHttpRequest();
-            ajax.upload.addEventListener("progress", progressHandler, false);
-            ajax.addEventListener("load", completeHandler, false);
-            ajax.addEventListener("error", errorHandler, false);
-            ajax.addEventListener("abort", abortHandler, false);
-            ajax.open("POST", otaServer +  '/upload');
-            ajax.send(formdata);
-          } else console.log(response.status); 
-        }
 
-        function progressHandler(event) {
-          $("#loaded_n_total").innerHTML = "Uploaded " + event.loaded + " of " + event.total + " bytes";
-          let percent = (event.loaded / event.total) * 100;
-          $("#progressOta").value = Math.round(percent);
-          $("#status").innerHTML = Math.round(percent) + "% transferred";
-          if (event.loaded  == event.total) $("#status").innerHTML = 'Uploaded, wait for completion result';
-        }
+       /************** Hub ****************/
+            
+      // create image elements with the saved IPs on page load
+      async function createImageElements(ipAddresses) {
+        const container = document.getElementById('imageContainer');
+        container.innerHTML = ''; // Clear existing content
 
-        function completeHandler(event) {
-          $("#status").innerHTML = event.target.responseText;
-          $("#progressOta").value = 0;
-        }
+        // Convert the array of IP addresses into individual IPs
+        for (const ip of ipAddresses) {
+          // Create a container div for each image
+          const ipContainer = document.createElement('div');
+          ipContainer.classList.add('ipContainer');
+          // Create an image element
+          const hubImg = document.createElement('img');
+          hubImg.classList.add('hubImg');
+          // Set the source attribute to request image
+          hubImg.src = `http://${ip}`;
+          // Set an alt attribute for accessibility
+          hubImg.alt = `No Image`;
 
-        function errorHandler(event) {
-          $("#status").innerHTML = "Upload Failed";
-          $("#progressOta").value = 0;
-        }
+          // Create a remove button for each container
+          const removeButton = document.createElement('span');
+          removeButton.classList.add('removeButton');
+          removeButton.classList.add('iconSize');
+          removeButton.innerHTML = '×';
+              
+          removeButton.onclick = function (event) {
+            event.stopPropagation(); // Prevent container click from triggering at the same time
+            // Remove the IP from local storage, remove the IP container, and update images
+            const updatedIPs = removeFromLocalStorage(ip);
+            container.removeChild(ipContainer);
+            createImageElements(updatedIPs);
+          };
 
-        function abortHandler(event) {
-          $("#status").innerHTML = "Upload Aborted";
-          $("#progressOta").value = 0;
+          // Create a text element to display the IP address overlay
+          const ipUrl = document.createElement('span');
+          ipUrl.classList.add('ipUrl');
+          ipUrl.textContent = ip;
+          ipUrl.style.display = 'none';
+          const ipText = document.createElement('span');
+          ipText.classList.add('ipText');
+          let ipStr = ip;
+          const index = ip.indexOf('/');
+          if (index !== -1) ipStr = ip.substring(0, index);
+          ipText.textContent = ipStr;
+
+          // Append the image, IP text, and remove button to the container
+          ipContainer.appendChild(ipUrl);
+          ipContainer.appendChild(ipText);
+          ipContainer.appendChild(removeButton);
+          ipContainer.appendChild(hubImg);
+          removeButton.style.position = 'absolute';
+          removeButton.style.top = '0';
+          removeButton.style.right = '0';
+
+          // Add click event listener to each container for fetching the web page for the IP address
+          ipContainer.onclick = function () {
+            window.open(`http://${ipStr}`, '_blank');
+          };
+
+          // Append the container to the main image container
+          container.appendChild(ipContainer);
         }
-        
+      }
+
+      function refreshAllContainers() {
+        const containers = document.querySelectorAll('.ipContainer');
+        containers.forEach((container) => {
+          const ip = container.querySelector('.ipUrl').textContent;
+          const hubImg = container.querySelector('img');
+          hubImg.src = `http://${ip}`;
+        });
+      }
+
+      // Function to create remote device image link when the "Add IP" button is clicked
+      function addIP() {
+        const ipInput = document.getElementById('ipInput');
+        const ipAddresses = localStorage.getItem('enteredIPs') ? JSON.parse(localStorage.getItem('enteredIPs')) : [];
+
+        // Add the entered IP to the array
+        let newIP = ipInput.value.trim();
+        if (newIP !== '' && !ipAddresses.includes(newIP)) {
+          // if only ip address, add app specific URI
+          // for any other app, enter full URL
+          if (newIP.indexOf('/') == -1) newIP += appHub;
+          ipAddresses.push(newIP);
+          localStorage.setItem('enteredIPs', JSON.stringify(ipAddresses));
+          // Call the function to create image elements with the updated IP addresses
+          createImageElements(ipAddresses);
+          // Clear the input field
+          ipInput.value = '';
+        }
+      }
+
+      // Function to remove an IP from local storage
+      function removeFromLocalStorage(ip) {
+        const ipAddresses = localStorage.getItem('enteredIPs') ? JSON.parse(localStorage.getItem('enteredIPs')) : [];
+        const updatedIPs = ipAddresses.filter(existingIP => existingIP !== ip);
+        // Update local storage with the modified array
+        localStorage.setItem('enteredIPs', JSON.stringify(updatedIPs));
+        return updatedIPs;
+      }
+
+      // Function to clear local storage
+      function clearLocalStorage() {
+        const ipAddresses = localStorage.getItem('enteredIPs') ? JSON.parse(localStorage.getItem('enteredIPs')) : [];
+        localStorage.removeItem('enteredIPs');
+        createImageElements(ipAddresses); // Update images after clearing local storage
+      }
+
+      // Retrieve and populate the input field with the saved IPs on page load
+      let hubObserver = new IntersectionObserver (entries => {
+        // refresh hub when becomes visible
+        entries.forEach(entry => { if (entry.isIntersecting) {
+          const savedIPs = localStorage.getItem('enteredIPs');
+          const ipAddresses = savedIPs ? JSON.parse(savedIPs) : [];
+          createImageElements(ipAddresses);
+        }});
+      }); 
+      let deviceHubEl = document.getElementById('DeviceHub');
+      if (deviceHubEl) hubObserver.observe(deviceHubEl);
+      
+      
+      /*********************** Browser Mic *********************/
+      
+      // Windows needs to allow microphone use in Microphone Privacy Settings
+      //
+      // In Microphone Properties / Advanced, check bit depth and sample rate (normally 16 bit 48kHz)
+      //
+      // chrome needs to allow access to mic from insecure (http) site:
+      // Go to : chrome://flags/#unsafely-treat-insecure-origin-as-secure
+      // Enter following URL in box: http://<app_ip_address>
+      
+      let micStream;
+      let isMicStreaming = false;
+      const inSampleRate = 48000;
+      let outSampleRate = 16000;
+      let Resample;
+      
+      function createAudioWorkletScript(sampleRateRatio) {
+        return `
+          class Resample extends AudioWorkletProcessor {
+            constructor() {
+              super();
+              this.sampleRateRatio = ${sampleRateRatio};
+              this.port.onmessage = this.handleMessage.bind(this);
+            }
+            
+            handleMessage(event) {
+              if (event.data.type === 'stop') {
+                this.port.close(); // Close the worklet port for future messages
+                return;
+              }
+            }
+
+            resampleAudio(inputChannel) {
+              // resample 16 bit 46kHz to 16kHz
+              const outputLength = Math.round(inputChannel.length / this.sampleRateRatio);
+              const resampledData = new Int16Array(outputLength);
+              let outputIndex = 0;
+              for (let i = 0; i < outputLength; i++) {
+                const inputIndex = Math.round(i * this.sampleRateRatio);
+                // Clamp the input index to avoid potential out-of-bounds access
+                const clampedIndex = Math.min(inputIndex, inputChannel.length - 1);
+                // convert float values -1 : 1 to 16 bit integers
+                resampledData[outputIndex++] = inputChannel[clampedIndex] * 32767;
+              }
+              return resampledData;
+            }
+
+            process(inputs, outputs, parameters) {
+              const inputChannel = inputs[0][0];
+              if (!inputChannel || !inputChannel.length) return true; // empty data
+              
+              const resampledData = this.resampleAudio(inputChannel);
+              this.port.postMessage(resampledData);
+              return true;
+            }
+          }
+          registerProcessor("resample", Resample);
+        `;
+      }
+
+      async function runMic() {
+        // start mic
+        const sampleRateRatio = inSampleRate / outSampleRate;
+        const audioWorkletScript = createAudioWorkletScript(sampleRateRatio);
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          if (!ws) initWebSocket();
+          const context = new AudioContext();
+          const source = context.createMediaStreamSource(micStream);
+          await context.audioWorklet.addModule('data:text/javascript;base64,' + btoa(audioWorkletScript));
+          Resample = new AudioWorkletNode(context, "resample");;
+          source.connect(Resample).connect(context.destination);
+
+          if (ws) {
+            if (ws.readyState === WebSocket.OPEN) {
+              isMicStreaming = true;
+              Resample.port.onmessage = function(event) {
+                ws ? ws.send(event.data) : closeMic(); // Send the audio chunk 
+              };
+            }
+          }
+        } catch (error) {
+          alert("Chrome needs security exception for " + baseHost);
+        }
+      }
+
+      function closeMic() {
+        // stop streaming
+        isMicStreaming = false;
+        if (ws) ws.send('X');
+        // close down mic
+        if (micStream) {
+          micStream.getTracks().forEach(track => track.stop()); // Close the microphone stream
+          micStream = null;
+        }
+        if (Resample && Resample.port) Resample.port.postMessage({ type: 'stop' }); // Send stop message
+        if (Resample) Resample.disconnect();
+        try { micAction(false); } 
+        catch (error) {}
+      }
+      
+      function micRemState(value) {
+        value ? runMic() : closeMic();
+      }
