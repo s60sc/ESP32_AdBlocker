@@ -24,7 +24,7 @@
 #define HOSTNAME_GRP 0
 
 #define APP_NAME "ESP32_AdBlocker" // max 15 chars
-#define APP_VER "2.2"
+#define APP_VER "2.3"
 
 #define HTTP_CLIENTS 2 // http, ws
 #define MAX_STREAMS 0

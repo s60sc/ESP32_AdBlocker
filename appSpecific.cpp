@@ -99,10 +99,10 @@ IPAddress checkBlocklist(const char* domainName) {
       char statusMsg[200];
       snprintf(statusMsg, 160, "%s %s in %lluus", (blocked) ? "*Blocked*" : "Allowed", domainName, checkTime);
       if (!blocked) sprintf(statusMsg + strlen(statusMsg), ", resolved to %s in %lums", ip.toString().c_str(), millis() - mselapsed);
-      LOG_DBG("%s", statusMsg);
+      LOG_VRB("%s", statusMsg);
     }
   }
-  return ip;                                                                            
+  return ip;
 }
 
 static void extractBlocklist() {
@@ -270,9 +270,9 @@ bool updateAppStatus(const char* variable, const char* value) {
   if (!strcmp(variable, "custom")) {
     // update config for latest stats to return on next main page call
     char cntStr[20];
-    sprintf(cntStr, "%u", blockCnt);
+    sprintf(cntStr, "%lu", blockCnt);
     updateConfigVect("blockCnt", cntStr);
-    sprintf(cntStr, "%u", allowCnt);
+    sprintf(cntStr, "%lu", allowCnt);
     updateConfigVect("allowCnt", cntStr);
   }
   else if (!strcmp(variable, "fileURL")) strncpy(fileURL, value, IN_FILE_NAME_LEN - 1);
@@ -370,6 +370,7 @@ Auth_Pass~~0~T~Optional user name for web page password
 formatIfMountFailed~0~1~C~Format file system on failure
 wifiTimeoutSecs~30~0~N~WiFi connect timeout (secs)
 alarmHour~4~1~N~Hour of day for blocklist update
+usePing~1~0~C~Use ping
 maxDomains~150~1~N~Max number of domains (* 1000)
 minMemory~128~1~N~Minimum free memory (KB)
 maxDomLen~100~1~N~Max length of domain name
@@ -377,5 +378,4 @@ allowCnt~0~2~D~Allowed domains
 blockCnt~0~2~D~Blocked domains
 fileURL~https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts~2~T~URL for blocklist file
 loadProg~0~2~D~Blocklist download progress
-usePing~1~0~C~Use ping
 )~";

@@ -2,6 +2,7 @@
 //
 // s60sc 2021, 2022
 
+#include "esp_arduino_version.h"
 #pragma once
 // to compile with -Wall -Werror=all -Wextra
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -10,11 +11,15 @@
 //#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 //#pragma GCC diagnostic ignored "-Wignored-qualifiers"
 //#pragma GCC diagnostic ignored "-Wclass-memaccess"
+#if (ESP_ARDUINO_VERSION_MAJOR >= 3)
+#pragma GCC diagnostic ignored "-Wvolatile"
+#else
+#pragma GCC diagnostic ignored "-Wformat"
+#endif
 
 /******************** Libraries *******************/
 
 #include "Arduino.h"
-#include <driver/i2s.h>
 #include <ESPmDNS.h> 
 #include "lwip/sockets.h"
 #include <vector>
@@ -72,6 +77,9 @@
 #define MIN_STACK_FREE 512
 #define STARTUP_FAIL "Startup Failure: "
 #define MAX_PAYLOAD_LEN 256 // set bigger than any websocket payload
+#define NULL_TEMP -127
+#define OneMHz 1000000
+#define USECS 1000000
 
 // global mandatory app specific functions, in appSpecific.cpp 
 bool appDataFiles();
@@ -139,7 +147,7 @@ void prepTemperature();
 void prepUart();
 void prepUpload();
 void reloadConfigs();
-float readTemperature(bool isCelsius);
+float readTemperature(bool isCelsius, bool onlyDS18 = false);
 float readVoltage();
 void remote_log_init();
 void remoteServerClose(WiFiClientSecure& sclient);
@@ -182,6 +190,8 @@ bool sendTgramMessage(const char* info, const char* item, const char* parseMode)
 bool sendTgramPhoto(uint8_t* photoData, size_t photoSize, const char* caption);
 bool sendTgramFile(const char* fileName, const char* contentType, const char* caption);
 void tgramAlert(const char* subject, const char* message);
+// externalHeartbeat.cpp
+void sendExternalHeartbeat();
 
 /******************** Global utility declarations *******************/
 
@@ -210,7 +220,7 @@ extern char Auth_Pass[];
 
 extern int responseTimeoutSecs; // how long to wait for remote server in secs
 extern bool allowAP; // set to true to allow AP to startup if cannot reconnect to STA (router)
-extern int wifiTimeoutSecs; // how often to check wifi status
+extern uint32_t wifiTimeoutSecs; // how often to check wifi status
 extern uint8_t percentLoaded;
 extern int refreshVal;
 extern bool dataFilesChecked;
@@ -218,7 +228,7 @@ extern char ipExtAddr[];
 extern bool doGetExtIP;
 extern bool usePing; // set to false if problems related to this issue occur: https://github.com/s60sc/ESP32-CAM_MJPEG2SD/issues/221
 extern bool wsLog;
-extern uint32_t sustainId;
+extern uint16_t sustainId;
 
 // remote file server
 extern char fsServer[];
@@ -247,6 +257,13 @@ extern char mqtt_port[];
 extern char mqtt_user[];
 extern char mqtt_user_Pass[];
 extern char mqtt_topic_prefix[];  
+
+// External Heartbeat
+extern bool external_heartbeat_active;
+extern char external_heartbeat_domain[]; //External Heartbeat domain/IP  
+extern char external_heartbeat_uri[];    //External Heartbeat uri (i.e. /myesp32-cam-hub/index.php)
+extern char external_heartbeat_port[];   //External Heartbeat server port to connect.  
+extern char external_heartbeat_token[];  //External Heartbeat server auth token.  
 
 // control sending alerts 
 extern size_t alertBufferSize;
@@ -336,12 +353,12 @@ extern bool formatIfMountFailed ; // Auto format the file system if mount failed
 #ifdef USE_LOG_COLORS
 #define LOG_COLOR_ERR  "\033[0;31m" // red
 #define LOG_COLOR_WRN  "\033[0;33m" // yellow
-#define LOG_COLOR_DBG  "\033[0;36m" // cyan
+#define LOG_COLOR_VRB  "\033[0;36m" // cyan
 #define LOG_NO_COLOR   "\033[0m"
 #else
 #define LOG_COLOR_ERR
 #define LOG_COLOR_WRN
-#define LOG_COLOR_DBG
+#define LOG_COLOR_VRB
 #define LOG_NO_COLOR
 #endif 
 
@@ -352,8 +369,8 @@ extern bool formatIfMountFailed ; // Auto format the file system if mount failed
 #define LOG_WRN(format, ...) logPrint(WRN_FORMAT(format "~"), ##__VA_ARGS__)
 #define ERR_FORMAT(format) LOG_COLOR_ERR "[%s ERROR @ %s:%u] " format LOG_NO_COLOR "\n", esp_log_system_timestamp(), pathToFileName(__FILE__), __LINE__
 #define LOG_ERR(format, ...) logPrint(ERR_FORMAT(format "~"), ##__VA_ARGS__)
-#define DBG_FORMAT(format) LOG_COLOR_DBG "[%s DEBUG @ %s:%u] " format LOG_NO_COLOR "\n", esp_log_system_timestamp(), pathToFileName(__FILE__), __LINE__
-#define LOG_DBG(format, ...) if (dbgVerbose) logPrint(DBG_FORMAT(format), ##__VA_ARGS__)
-#define CHK_FORMAT(format) LOG_COLOR_ERR "[###### CHECK @ %s:%u] " format LOG_NO_COLOR "\n", pathToFileName(__FILE__), __LINE__
-#define LOG_CHK(format, ...) do { logPrint(CHK_FORMAT(format), ##__VA_ARGS__); delay(FLUSH_DELAY); } while (0)
+#define VRB_FORMAT(format) LOG_COLOR_VRB "[%s VERBOSE @ %s:%u] " format LOG_NO_COLOR "\n", esp_log_system_timestamp(), pathToFileName(__FILE__), __LINE__
+#define LOG_VRB(format, ...) if (dbgVerbose) logPrint(VRB_FORMAT(format), ##__VA_ARGS__)
+#define DBG_FORMAT(format) LOG_COLOR_ERR "[###### DBG @ %s:%u] " format LOG_NO_COLOR "\n", pathToFileName(__FILE__), __LINE__
+#define LOG_DBG(format, ...) do { logPrint(DBG_FORMAT(format), ##__VA_ARGS__); delay(FLUSH_DELAY); } while (0)
 #define LOG_PRT(buff, bufflen) log_print_buf((const uint8_t*)buff, bufflen)

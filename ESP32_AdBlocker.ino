@@ -21,13 +21,13 @@
 
 void setup() { 
   logSetup();
-  // prep SD card storage
+  // prep data storage
   if (startStorage()) {
     // Load saved user configuration
     if (loadConfig()) {
       if (psramFound()) {
-        LOG_INF("PSRAM size: %s", fmtSize(esp_spiram_get_size()));
-        if (esp_spiram_get_size() < 3 * ONEMEG) 
+        LOG_INF("PSRAM size: %s", fmtSize(ESP.getPsramSize()));
+        if (ESP.getPsramSize() < 3 * ONEMEG) 
           snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Insufficient PSRAM for app");
       }
       else snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Need PSRAM to be enabled");
