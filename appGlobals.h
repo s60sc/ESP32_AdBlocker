@@ -22,9 +22,10 @@
 #define DBG_ON false // esp debug output
 #define DOT_MAX 50
 #define HOSTNAME_GRP 0
+#define USE_IP6 false
 
 #define APP_NAME "ESP32_AdBlocker" // max 15 chars
-#define APP_VER "2.3"
+#define APP_VER "2.4"
 
 #define HTTP_CLIENTS 2 // http, ws
 #define MAX_STREAMS 0
@@ -56,7 +57,7 @@
 #define EXTPIN 100
 
 // to determine if newer data files need to be loaded
-#define CFG_VER 2
+#define CFG_VER 3
 
 #ifdef CONFIG_IDF_TARGET_ESP32S3 
 #define SERVER_STACK_SIZE (1024 * 8)

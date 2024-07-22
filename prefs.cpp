@@ -60,7 +60,13 @@ void showConfigVect() {
 }
 
 void reloadConfigs() {
-  while (getNextKeyVal()) updateStatus(variable, value);
+  while (getNextKeyVal()) updateStatus(variable, value, false);
+#if INCLUDE_MQTT
+  if (mqtt_active) {
+    buildJsonString(1);
+    mqttPublishPath("config", jsonBuff);
+  }
+#endif
 }
 
 static int getKeyPos(std::string thisKey) {
@@ -221,7 +227,7 @@ static bool loadPrefs() {
   return true;
 }
 
-void updateStatus(const char* variable, const char* _value) {
+void updateStatus(const char* variable, const char* _value, bool fromUser) {
   // called from controlHandler() to update app status from changes made on browser
   // or from loadConfig() to update app status from stored preferences
   bool res = true;
@@ -301,8 +307,7 @@ void updateStatus(const char* variable, const char* _value) {
 #if INCLUDE_MQTT
   else if (!strcmp(variable, "mqtt_active")) {
     mqtt_active = (bool)intVal;
-    if (mqtt_active) startMqttClient();
-    else stopMqttClient();
+    if (!mqtt_active) stopMqttClient();
   } 
   else if (!strcmp(variable, "mqtt_broker")) strncpy(mqtt_broker, value, MAX_HOST_LEN-1);
   else if (!strcmp(variable, "mqtt_port")) strncpy(mqtt_port, value, 4);
@@ -353,7 +358,7 @@ void updateStatus(const char* variable, const char* _value) {
     if (intVal) savePrefs();
     saveConfigVect();
   } else {
-    res = updateAppStatus(variable, value);
+    res = updateAppStatus(variable, value, fromUser);
     if (!res) LOG_VRB("Unrecognised config: %s", variable);
   }
   if (res) updateConfigVect(variable, value);  
@@ -508,7 +513,6 @@ bool loadConfig() {
     loadConfigVect();
     //showConfigVect();
     loadPrefs(); // overwrites any corresponding entries in config
-
     // load variables from stored config vector
     reloadConfigs();
     debugMemory("loadConfig");

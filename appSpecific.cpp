@@ -134,7 +134,7 @@ static bool downloadBlockList() {
   // download blocklist file from web
   bool res = false;
   WiFiClientSecure wclient;
-  if (remoteServerConnect(wclient, GITHUB_HOST, HTTPS_PORT, git_rootCACertificate)) {
+  if (remoteServerConnect(wclient, GITHUB_HOST, HTTPS_PORT, git_rootCACertificate, BLOCKLIST)) {
     HTTPClient https;
     size_t downloadSize = 0;
     char progStr[10];
@@ -263,7 +263,7 @@ void showBlockList(int maxItems) {
 
 /************************ webServer callbacks *************************/
 
-bool updateAppStatus(const char* variable, const char* value) {
+bool updateAppStatus(const char* variable, const char* value, bool fromUser) {
   // update vars from configs and browser input
   bool res = true;
   int intVal = atoi(value);

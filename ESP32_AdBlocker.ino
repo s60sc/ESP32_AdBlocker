@@ -7,7 +7,7 @@
    Currently it does not have an IPv6 address and some devices use IPv6 by default, so disable IPv6 DNS on 
    your device / router to force it to use IPv4 DNS.
 
-   Blocklist files can downloaded from hosting sites and should either be in HOSTS format 
+   Blocklist files can be downloaded from hosting sites and should either be in HOSTS format 
    or Adblock format (only domain name entries processed)
 
    arduino-esp32 library DNSServer.cpp modified as custom AdBlockerDNSServer.cpp so that DNSServer::processNextRequest()
