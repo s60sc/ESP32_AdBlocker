@@ -15,7 +15,6 @@
 /*********************** Fixed defines leave as is ***********************/ 
 /** Do not change anything below here unless you know what you are doing **/
 
-//#define DEV_ONLY // leave commented out
 #define STATIC_IP_OCTAL "168" // dev only
 #define DEBUG_MEM false // leave as false
 #define FLUSH_DELAY 0 // for debugging crashes
@@ -25,7 +24,7 @@
 #define USE_IP6 false
 
 #define APP_NAME "ESP32_AdBlocker" // max 15 chars
-#define APP_VER "2.4"
+#define APP_VER "2.5"
 
 #define HTTP_CLIENTS 2 // http, ws
 #define MAX_STREAMS 0
@@ -52,9 +51,6 @@
 #define INCLUDE_TGRAM false   // telegram.cpp
 #define INCLUDE_CERTS false   // certificates.cpp (https and server certificate checking)
 #define INCLUDE_WEBDAV true   // webDav.cpp (WebDAV protocol)
-
-#define IS_IO_EXTENDER false // must be false except for IO_Extender
-#define EXTPIN 100
 
 // to determine if newer data files need to be loaded
 #define CFG_VER 3
@@ -88,7 +84,6 @@
 #define LOG_PRI 1
 #define UART_PRI 1
 #define BATT_PRI 1
-#define IDLEMON_PRI 5
 
 /******************** Function declarations *******************/
 

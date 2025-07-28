@@ -33,7 +33,7 @@ struct {
   char* lastDomain;
   bool lastResult;
 } lastCheck;
-                                                                                                      
+
 static void dnsTask(void* parameter) {
   // higher priority than loop()
   while (true) dnsServer.processNextRequest();
@@ -133,7 +133,7 @@ static void extractBlocklist() {
 static bool downloadBlockList() {
   // download blocklist file from web
   bool res = false;
-  WiFiClientSecure wclient;
+  NetworkClientSecure wclient;
   if (remoteServerConnect(wclient, GITHUB_HOST, HTTPS_PORT, git_rootCACertificate, BLOCKLIST)) {
     HTTPClient https;
     size_t downloadSize = 0;
@@ -323,7 +323,7 @@ void buildAppJsonString(bool filter) {
 }
 
 esp_err_t appSpecificWebHandler(httpd_req_t *req, const char* variable, const char* value) {
-  return ESP_OK;
+  return ESP_FAIL;
 }
 
 esp_err_t appSpecificSustainHandler(httpd_req_t* req) {

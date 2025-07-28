@@ -1,14 +1,32 @@
 // General purpose SD card and flash storage utilities
 //
-// s60sc 2021, 2022 
+// Card can be accessed using a 1 data bit or 4 data bits (if allowed by board)
+// 4 data bits is potentially faster on ESP32S3 (depending on card spec) 
+// but requires 3 additional pins
+/* The following #defines must be declared under the relevant camera entry in camera_pins.h
+   1 bit       4 bit        
+   SD_MMC_CMD  SD_MMC_CMD  
+   SD_MMC_CLK  SD_MMC_CLK   
+   SD_MMC_D0   SD_MMC_D0    
+               SD_MMC_D1     
+               SD_MMC_D2    
+               SD_MMC_D3    
+*/
+// s60sc 2021, 2022, 2025
 
 #include "appGlobals.h"
+#include "ff.h"
+#include "vfs_fat_internal.h"
 
 // Storage settings
 int sdMinCardFreeSpace = 100; // Minimum amount of card free Megabytes before sdFreeSpaceMode action is enabled
 int sdFreeSpaceMode = 1; // 0 - No Check, 1 - Delete oldest dir, 2 - Upload oldest dir to FTP/HFS and then delete on SD 
 bool formatIfMountFailed = true; // Auto format the file system if mount failed. Set to false to not auto format.
+static bool use1bitMode = true;
 static fs::FS fp = STORAGE;
+#if (!CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S2)
+static int sdmmcFreq = BOARD_MAX_SDMMC_FREQ; // board specific default SD_MMC speed
+#endif
 
 // hold sorted list of filenames/folders names in order of newest first
 static std::vector<std::string> fileVec;
@@ -17,7 +35,7 @@ static auto previousDir = "/~previous";
 static char fsType[10] = {0};
 
 static void infoSD() {
-#if !(CONFIG_IDF_TARGET_ESP32C3)
+#if (!CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S2)
   uint8_t cardType = SD_MMC.cardType();
   if (cardType == CARD_NONE) LOG_WRN("No SD card attached");
   else {
@@ -25,23 +43,14 @@ static void infoSD() {
     if (cardType == CARD_MMC) strcpy(typeStr, "MMC");
     else if (cardType == CARD_SD) strcpy(typeStr, "SDSC");
     else if (cardType == CARD_SDHC) strcpy(typeStr, "SDHC");
-    LOG_INF("SD card type %s, Size: %s", typeStr, fmtSize(SD_MMC.cardSize()));
+    LOG_INF("SD card type %s, Size: %s, using %d bit mode @ %uMHz", typeStr, fmtSize(SD_MMC.cardSize()), use1bitMode ? 1 : 4, sdmmcFreq / 1000);
   }
 #endif
 }
 
 static bool prepSD_MMC() {
   bool res = false;
-#if !(CONFIG_IDF_TARGET_ESP32C3)
-  /* open SD card in MMC 1 bit mode
-     MMC4  MMC1  ESP32 ESP32S3
-      D2          12
-      D3    ..    13
-      CMD  CMD    15    38
-      CLK  CLK    14    39
-      D0   D0     2     40
-      D1          4
-  */
+#if (!CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S2)
   if (psramFound()) heap_caps_malloc_extmem_enable(MIN_RAM); // small number to force vector into psram
   fileVec.reserve(1000);
   if (psramFound()) heap_caps_malloc_extmem_enable(MAX_RAM);
@@ -50,11 +59,18 @@ static bool prepSD_MMC() {
   LOG_WRN("SD card pins not defined");
   return false;
 #else
+ #if defined(SD_MMC_D1)
+  // assume 4 bit mode
+  SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0, SD_MMC_D1, SD_MMC_D2, SD_MMC_D3);
+  use1bitMode = false;
+ #else
+  // assume 1 bit mode
   SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+ #endif
 #endif
 #endif
   
-  res = SD_MMC.begin("/sdcard", true, formatIfMountFailed);
+  res = SD_MMC.begin("/sdcard", use1bitMode, formatIfMountFailed, sdmmcFreq);
 #if defined(CAMERA_MODEL_AI_THINKER)
   pinMode(4, OUTPUT);
   digitalWrite(4, 0); // set lamp pin fully off as sd_mmc library still initialises pin 4 in 1 line mode
@@ -88,7 +104,7 @@ static void listFolder(const char* rootDir) {
 bool startStorage() {
   // start required storage device (SD card or flash file system)
   bool res = false;
-#if !(CONFIG_IDF_TARGET_ESP32C3)
+#if (!CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S2)
   if ((fs::SDMMCFS*)&STORAGE == &SD_MMC) {
     strcpy(fsType, "SD_MMC");
     res = prepSD_MMC();
@@ -322,7 +338,7 @@ void deleteFolderOrFile(const char* deleteThis) {
 #define BLOCKSIZE 512
 
 static esp_err_t writeHeader(File& inFile, httpd_req_t* req) {  
-  char tarHeader[BLOCKSIZE] = {}; // 512 bytes tar header
+  char tarHeader[BLOCKSIZE] = {0}; // 512 bytes tar header
   strncpy(tarHeader, inFile.name(), 99); // name of file
   sprintf(tarHeader + 100, "0000666"); // file permissions stored as ascii octal number
   sprintf(tarHeader + 124, "%011o", inFile.size()); // length of file in bytes as 6 digit ascii octal number
@@ -335,7 +351,6 @@ static esp_err_t writeHeader(File& inFile, httpd_req_t* req) {
   uint32_t checksum = 0;
   for (const auto& ch : tarHeader) checksum += ch;
   sprintf(tarHeader + 148, "%06lo", checksum); // six digit octal number with leading zeroes followed by a NUL and then a space.
-
   return httpd_resp_send_chunk(req, tarHeader, BLOCKSIZE);
 }
 
@@ -413,4 +428,31 @@ esp_err_t downloadFile(File& df, httpd_req_t* req) {
 #endif
   } else res = sendChunks(df, req); // send AVI
   return res;
+}
+
+bool formatSDcard() {
+  // format SD card, erases existing content
+  // can take some time to complete
+  // invoke from url: <cam ip>/control?formatSD=1
+  LOG_INF("Format the SD card, wait ...");
+  char drv[3] = {'0', ':', 0};
+  const size_t workbuf_size = 4096;
+  void* workbuf = NULL;
+  size_t allocation_unit_size = 4 * 1024;
+  int sector_size_default = 512;
+
+  workbuf = ff_memalloc(workbuf_size);
+  if (workbuf == NULL) {
+    LOG_ERR("workbuf memory not allocated");
+    return false;
+  }
+
+  size_t alloc_unit_size = esp_vfs_fat_get_allocation_unit_size(
+      sector_size_default, allocation_unit_size);
+  const MKFS_PARM opt = {(BYTE)FM_ANY, 0, 0, 0, alloc_unit_size};
+  FRESULT res = f_mkfs(drv, &opt, workbuf, workbuf_size);
+  ff_memfree(workbuf);
+  if (res != FR_OK) LOG_ERR("SD card format failed");
+  else LOG_INF("SD card formatted with alloc unit size %d", alloc_unit_size);
+  return res != FR_OK ? false : true;
 }

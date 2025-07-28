@@ -3,18 +3,26 @@
 // s60sc 2021, 2022
 
 #include "esp_arduino_version.h"
+
+#if ESP_ARDUINO_VERSION < ESP_ARDUINO_VERSION_VAL(3, 1, 1)
+#error Must be compiled with arduino-esp32 core v3.1.1 or higher
+#endif
+
 #pragma once
+
+//#define DEV_ONLY // leave commented out
+#ifdef DEV_ONLY
 // to compile with -Wall -Werror=all -Wextra
+#pragma GCC diagnostic error "-Wformat=2"
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#pragma GCC diagnostic ignored "-Wformat-y2k"
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 //#pragma GCC diagnostic ignored "-Wunused-variable"
 //#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 //#pragma GCC diagnostic ignored "-Wignored-qualifiers"
 //#pragma GCC diagnostic ignored "-Wclass-memaccess"
-#if (ESP_ARDUINO_VERSION_MAJOR >= 3)
 #pragma GCC diagnostic ignored "-Wvolatile"
-#else
-#pragma GCC diagnostic ignored "-Wformat"
 #endif
 
 /******************** Libraries *******************/
@@ -26,7 +34,7 @@
 #include "ping/ping_sock.h"
 #include <Preferences.h>
 #include <regex>
-#if !CONFIG_IDF_TARGET_ESP32C3
+#if (!CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S2)
 #include <SD_MMC.h>
 #endif
 #include <LittleFS.h>
@@ -34,10 +42,8 @@
 #include <Update.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-////#include <NetworkClient.h> // v3.x only
-////#include <NetworkClientSecure.h> // v3.x only
-#include <WiFiClient.h>
-#include <WiFiClientSecure.h>
+#include <NetworkClient.h> 
+#include <NetworkClientSecure.h> 
 #include <esp_http_server.h>
 #include <esp_https_server.h>
 
@@ -81,7 +87,7 @@
 #define RAM_LOG_LEN (1024 * 7) // size of system message log in bytes stored in slow RTC ram (max 8KB - vars)
 #define MIN_STACK_FREE 512
 #define STARTUP_FAIL "Startup Failure: "
-#define MAX_PAYLOAD_LEN 256 // set bigger than any websocket payload
+#define MAX_PAYLOAD_LEN 672 // set bigger than any incoming websocket payload (20ms audio)
 #define NULL_TEMP -127
 #define OneMHz 1000000
 #define USECS 1000000
@@ -103,8 +109,10 @@ void buildJsonString(uint8_t filter);
 bool calcProgress(int progressVal, int totalVal, int percentReport, uint8_t &pcProgress);
 bool changeExtension(char* fileName, const char* newExt);
 bool checkAlarm();
+bool checkAuth(httpd_req_t* req);
 bool checkDataFiles();
 bool checkFreeStorage();
+bool checkI2Cdevice(const char* devName);
 void checkMemory(const char* source = "");
 uint32_t checkStackUse(TaskHandle_t thisTask, int taskIdx);
 void debugMemory(const char* caller);
@@ -128,11 +136,13 @@ char* fmtSize (uint64_t sizeVal);
 void forceCrash();
 void formatElapsedTime(char* timeStr, uint32_t timeVal, bool noDays = false);
 void formatHex(const char* inData, size_t inLen);
+bool formatSDcard();
 bool fsStartTransfer(const char* fileFolder);
 const char* getEncType(int ssidIndex);
 void getExtIP();
 time_t getEpoch();
 size_t getFreeStorage();
+uint32_t getFrequency();
 bool getLocalNTP();
 float getNTCcelsius(uint16_t resistance, float oldTemp);
 void goToSleep(int wakeupPin, bool deepSleep);
@@ -147,24 +157,27 @@ void logPrint(const char *fmtStr, ...);
 void logSetup();
 void OTAprereq();
 bool parseJson(int rxSize);
+bool prepFreq(int maxFreq, int sampleInterval);
+bool prepI2C();
 void prepPeripherals();
 void prepSMTP();
 bool prepTelegram();
 void prepTemperature();
-void prepUart();
 void prepUpload();
 void reloadConfigs();
+float readInternalTemp();
 float readTemperature(bool isCelsius, bool onlyDS18 = false);
 float readVoltage();
 void remote_log_init();
-void remoteServerClose(WiFiClientSecure& sclient);
-bool remoteServerConnect(WiFiClientSecure& sclient, const char* serverName, uint16_t serverPort, const char* serverCert, uint8_t connIdx);
+void remoteServerClose(NetworkClientSecure& sclient);
+bool remoteServerConnect(NetworkClientSecure& sclient, const char* serverName, uint16_t serverPort, const char* serverCert, uint8_t connIdx);
 void remoteServerReset();
 void removeChar(char* s, char c);
 void replaceChar(char* s, char c, char r);
 void reset_log();
 void resetWatchDog();
 bool retrieveConfigVal(const char* variable, char* value);
+void runTaskStats();
 esp_err_t sendChunks(File df, httpd_req_t *req, bool endChunking = true);
 void setFolderName(const char* fname, char* fileName);
 void setPeripheralResponse(const byte pinNum, const uint32_t responseData);
@@ -187,12 +200,13 @@ void urlDecode(char* inVal);
 bool urlEncode(const char* inVal, char* encoded, size_t maxSize);
 uint32_t usePeripheral(const byte pinNum, const uint32_t receivedData);
 esp_sleep_wakeup_cause_t wakeupResetReason();
-void wsAsyncSend(const char* wsData);
+void wsAsyncSendBinary(uint8_t* data, size_t len);
+bool wsAsyncSendText(const char* wsData);
 // mqtt.cpp
 void startMqttClient();  
 void stopMqttClient();  
 void mqttPublish(const char* payload);
-void mqttPublishPath(const char* suffix, const char* payload);
+void mqttPublishPath(const char* suffix, const char* payload, const char *device = "sensor");
 // telegram.cpp
 bool getTgramUpdate(char* response);
 bool sendTgramMessage(const char* info, const char* item, const char* parseMode);
@@ -238,6 +252,8 @@ extern bool doGetExtIP;
 extern bool usePing; // set to false if problems related to this issue occur: https://github.com/s60sc/ESP32-CAM_MJPEG2SD/issues/221
 extern bool wsLog;
 extern uint16_t sustainId;
+extern bool heartBeatDone;
+extern TaskHandle_t heartBeatHandle;
 
 // remote file server
 extern char fsServer[];
@@ -300,11 +316,14 @@ extern char messageLog[];
 extern uint16_t mlogEnd;
 extern bool timeSynchronized;
 extern bool monitorOpen; 
-extern const char* setupPage_html;
+extern const uint8_t setupPage_html_gz[];
+extern const size_t setupPage_html_gz_len;
 extern const char* otaPage_html;
-extern SemaphoreHandle_t wsSendMutex;
+extern const char* failPageS_html;
+extern const char* failPageE_html;
 extern char startupFailure[];
 extern time_t currEpoch;
+extern bool RCactive;
 
 extern UBaseType_t uxHighWaterMarkArr[];
 
@@ -312,6 +331,10 @@ extern UBaseType_t uxHighWaterMarkArr[];
 extern int sdMinCardFreeSpace; // Minimum amount of card free Megabytes before freeSpaceMode action is enabled
 extern int sdFreeSpaceMode; // 0 - No Check, 1 - Delete oldest dir, 2 - Upload to ftp and then delete folder on SD 
 extern bool formatIfMountFailed ; // Auto format the file system if mount failed. Set to false to not auto format.
+
+// I2C pins
+extern int I2Csda;
+extern int I2Cscl;
 
 #define HTTP_METHOD_STRING(method) \
   (method == HTTP_DELETE) ? "DELETE" : \
@@ -354,15 +377,18 @@ enum RemoteFail {SETASSIST, GETEXTIP, TGRAMCONN, FSFTP, EMAILCONN, EXTERNALHB, B
 /*********************** Log formatting ************************/
 
 //#define USE_LOG_COLORS  // uncomment to colorise log messages (eg if using idf.py, but not arduino)
-#ifdef USE_LOG_COLORS
+#ifdef USE_LOG_COLORS 
+// ANSI color codes
 #define LOG_COLOR_ERR  "\033[0;31m" // red
 #define LOG_COLOR_WRN  "\033[0;33m" // yellow
 #define LOG_COLOR_VRB  "\033[0;36m" // cyan
-#define LOG_NO_COLOR   "\033[0m"
+#define LOG_COLOR_DBG  "\033[0;34m" // blue
+#define LOG_NO_COLOR   
 #else
 #define LOG_COLOR_ERR
 #define LOG_COLOR_WRN
 #define LOG_COLOR_VRB
+#define LOG_COLOR_DBG
 #define LOG_NO_COLOR
 #endif 
 
@@ -375,6 +401,6 @@ enum RemoteFail {SETASSIST, GETEXTIP, TGRAMCONN, FSFTP, EMAILCONN, EXTERNALHB, B
 #define LOG_ERR(format, ...) logPrint(ERR_FORMAT(format "~"), ##__VA_ARGS__)
 #define VRB_FORMAT(format) LOG_COLOR_VRB "[%s VERBOSE @ %s:%u] " format LOG_NO_COLOR "\n", esp_log_system_timestamp(), pathToFileName(__FILE__), __LINE__
 #define LOG_VRB(format, ...) if (dbgVerbose) logPrint(VRB_FORMAT(format), ##__VA_ARGS__)
-#define DBG_FORMAT(format) LOG_COLOR_ERR "[###### DBG @ %s:%u] " format LOG_NO_COLOR "\n", pathToFileName(__FILE__), __LINE__
+#define DBG_FORMAT(format) LOG_COLOR_DBG "[%s ### DEBUG @ %s:%u] " format LOG_NO_COLOR "\n", esp_log_system_timestamp(), pathToFileName(__FILE__), __LINE__
 #define LOG_DBG(format, ...) do { logPrint(DBG_FORMAT(format), ##__VA_ARGS__); delay(FLUSH_DELAY); } while (0)
 #define LOG_PRT(buff, bufflen) log_print_buf((const uint8_t*)buff, bufflen)

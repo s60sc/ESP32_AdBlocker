@@ -30,7 +30,6 @@
 static fs::FS fp = STORAGE;
 static std::vector<std::vector<std::string>> configs;
 static Preferences prefs; 
-char* jsonBuff = NULL;
 static char appId[16];
 static char variable[FILE_NAME_LEN] = {0};
 static char value[IN_FILE_NAME_LEN] = {0};
@@ -64,7 +63,7 @@ void reloadConfigs() {
 #if INCLUDE_MQTT
   if (mqtt_active) {
     buildJsonString(1);
-    mqttPublishPath("config", jsonBuff);
+    mqttPublishPath("status", jsonBuff);
   }
 #endif
 }
@@ -193,6 +192,9 @@ static bool savePrefs(bool retain = true) {
 #if INCLUDE_MQTT
   prefs.putString("mqtt_user_Pass", mqtt_user_Pass);
 #endif
+#if INCLUDE_RTSP
+  prefs.putString("RTSP_Pass", RTSP_Pass);
+#endif
   prefs.end();
   LOG_INF("Saved preferences");
   return true;
@@ -223,6 +225,9 @@ static bool loadPrefs() {
 #if INCLUDE_MQTT
   prefs.getString("mqtt_user_Pass", mqtt_user_Pass, MAX_PWD_LEN);
 #endif
+#if INCLUDE_RTSP
+  prefs.getString("RTSP_Pass", RTSP_Pass, MAX_PWD_LEN);
+#endif
   prefs.end();
   return true;
 }
@@ -237,7 +242,7 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
   if (mqtt_active) {
     char buff[(IN_FILE_NAME_LEN * 2)];
     snprintf(buff, IN_FILE_NAME_LEN * 2, "%s=%s", variable, value);
-    mqttPublish(buff);
+    mqttPublishPath("state", buff);
   }
 #endif
 
@@ -315,7 +320,20 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
   else if (!strcmp(variable, "mqtt_user_Pass") && value[0] != '*') strncpy(mqtt_user_Pass, value, MAX_PWD_LEN-1);
   else if (!strcmp(variable, "mqtt_topic_prefix")) strncpy(mqtt_topic_prefix, value, (FILE_NAME_LEN/2)-1);
 #endif
-
+#if INCLUDE_RTSP
+  else if (!strcmp(variable, "RTSP_Name")) strncpy(RTSP_Name, value, MAX_HOST_LEN-1);
+  else if (!strcmp(variable, "RTSP_Pass")  && value[0] != '*')strncpy(RTSP_Pass, value, MAX_PWD_LEN-1);
+  else if (!strcmp(variable, "rtsp00Video")) rtspVideo = streamVid = (bool)intVal;
+  else if (!strcmp(variable, "rtsp01Audio")) rtspAudio = streamAud = (bool)intVal;
+  else if (!strcmp(variable, "rtsp02Subtitles")) rtspSubtitles = streamSrt = (bool)intVal;
+  else if (!strcmp(variable, "rtsp03Port")) rtspPort = intVal;
+  else if (!strcmp(variable, "rtsp04VideoPort")) rtpVideoPort = intVal;
+  else if (!strcmp(variable, "rtsp05AudioPort")) rtpAudioPort = intVal;
+  else if (!strcmp(variable, "rtsp06SubtitlesPort")) rtpSubtitlesPort = intVal;
+  else if (!strcmp(variable, "rtsp07Ip")) strncpy(RTP_ip, value, MAX_IP_LEN-1);
+  else if (!strcmp(variable, "rtsp08MaxC")) rtspMaxClients = intVal;
+  else if (!strcmp(variable, "rtsp09TTL")) rtpTTL = intVal;
+#endif
   // Other settings
   else if (!strcmp(variable, "clockUTC")) syncToBrowser((uint32_t)intVal);      
   else if (!strcmp(variable, "timezone")) strncpy(timezone, value, FILE_NAME_LEN-1);
@@ -359,7 +377,10 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
     saveConfigVect();
   } else {
     res = updateAppStatus(variable, value, fromUser);
-    if (!res) LOG_VRB("Unrecognised config: %s", variable);
+    if (!res) {
+      if (fromUser) LOG_WRN("Unable to config %s as required cpp file not included", variable);
+      else LOG_VRB("Unrecognised config: %s", variable);
+    }
   }
   if (res) updateConfigVect(variable, value);  
 }
@@ -381,7 +402,7 @@ void buildJsonString(uint8_t filter) {
     char timeBuff[20];
     strftime(timeBuff, 20, "%Y-%m-%d %H:%M:%S", localtime(&currEpoch));
     p += sprintf(p, "\"clock\":\"%s\",", timeBuff);
-    formatElapsedTime(timeBuff, millis());
+    formatElapsedTime(timeBuff, millis()); // rolls over after 49.7 days due to max uint32
     p += sprintf(p, "\"up_time\":\"%s\",", timeBuff);   
     p += sprintf(p, "\"free_heap\":\"%s\",", fmtSize(ESP.getFreeHeap()));    
     p += sprintf(p, "\"wifi_rssi\":\"%i dBm\",", WiFi.RSSI() );  
@@ -408,6 +429,9 @@ void buildJsonString(uint8_t filter) {
 #endif
 #if INCLUDE_MQTT
       p += sprintf(p, "\"mqtt_user_Pass\":\"%.*s\",", strlen(mqtt_user_Pass), FILLSTAR);
+#endif
+#if INCLUDE_RTSP
+      p += sprintf(p, "\"RTSP_Pass\":\"%.*s\",", strlen(RTSP_Pass), FILLSTAR);
 #endif
     }
   } else {
@@ -504,9 +528,6 @@ static bool checkConfigFile() {
 bool loadConfig() {
   // called on startup
   LOG_INF("Load config");
-  if (jsonBuff == NULL) {
-    jsonBuff = psramFound() ? (char*)ps_malloc(JSON_BUFF_LEN) : (char*)malloc(JSON_BUFF_LEN); 
-  }
   bool res = checkConfigFile();
   if (!res) res = checkConfigFile(); // to recreate file if deleted on first call
   if (res) {

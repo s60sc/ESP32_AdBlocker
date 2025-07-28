@@ -18,9 +18,14 @@ bool dataFilesChecked = false;
 // allow any startup failures to be reported via browser for remote devices
 char startupFailure[SF_LEN] = {0};
 size_t alertBufferSize = 0;
+size_t maxAlertBuffSize = 32 * 1024;
 byte* alertBuffer = NULL; // buffer for telegram / smtp alert image
 RTC_NOINIT_ATTR uint32_t crashLoop;
+RTC_NOINIT_ATTR char brownoutStatus;
 static void initBrownout(void);
+int wakePin; // if wakeUse is true
+bool wakeUse = false; // true to allow app to sleep and wake
+char* jsonBuff = NULL;
 
 /************************** Wifi **************************/
 
@@ -59,11 +64,12 @@ esp_ping_handle_t pingHandle = NULL;
 bool usePing = true;
 
 static void startPing();
+static void printGpioInfo();
 
 static void setupMdnsHost() {  
   // set up MDNS service 
   char mdnsName[MAX_IP_LEN]; // max mdns host name length
-  snprintf(mdnsName, MAX_IP_LEN, hostName);
+  snprintf(mdnsName, MAX_IP_LEN, "%.*s", MAX_IP_LEN - 1, hostName);
   if (MDNS.begin(mdnsName)) {
     // Add service to MDNS
     MDNS.addService("http", "tcp", HTTP_PORT);
@@ -84,10 +90,8 @@ static const char* wifiStatusStr(wl_status_t wlStat) {
     case WL_CONNECTED: return "WL_CONNECTED";
     case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED";
     case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
-    case WL_DISCONNECTED: return "unable to connect";
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)    
+    case WL_DISCONNECTED: return "unable to connect";  
     case WL_STOPPED: return "wifi stopped";
-#endif
     default: return "Invalid WiFi.status";
   }
 }
@@ -173,9 +177,7 @@ static void setWifiSTA() {
       LOG_INF("Wifi Station set static IP");
     } 
   } else LOG_INF("Wifi Station IP from DHCP");
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
   WiFi.enableIPv6(USE_IP6); 
-#endif
   WiFi.begin(ST_SSID, ST_Pass);
   debugMemory("setWifiSTA");
 }
@@ -218,12 +220,11 @@ bool startWifi(bool firstcall) {
 }
 
 void resetWatchDog() {
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  // Code for version 3.x
   // use ping task as watchdog in case of freeze
   static bool watchDogStarted = false;
   if (watchDogStarted) esp_task_wdt_reset();
   else {
+    // setup watchdog on first call
     esp_task_wdt_deinit(); 
     esp_task_wdt_config_t twdt_config = {
       .timeout_ms = (wifiTimeoutSecs * 1000 * 2),
@@ -238,18 +239,6 @@ void resetWatchDog() {
       LOG_INF("WatchDog started using task: %s", pcTaskGetName(NULL));
     } else LOG_ERR("WatchDog failed to start");
   }
-#else
-  // Code for version 2.x
-  // use ping task as watchdog in case of freeze
-  static bool watchDogStarted = false;
-  if (watchDogStarted) esp_task_wdt_reset();
-  else {
-    esp_task_wdt_init(wifiTimeoutSecs * 2, true); // panic abort on watchdog alert (contains wdt_isr)
-    esp_task_wdt_add(NULL);
-    watchDogStarted = true;
-    LOG_INF("WatchDog started using task: %s", pcTaskGetName(NULL));
-  }
-#endif
 }
 
 static void statusCheck() {
@@ -343,7 +332,7 @@ bool doGetExtIP = true;
 void getExtIP() {
   // Get external IP address
   if (doGetExtIP) { 
-    WiFiClientSecure hclient;
+    NetworkClientSecure hclient;
     if (remoteServerConnect(hclient, EXT_IP_HOST, HTTPS_PORT, "", GETEXTIP)) {
       HTTPClient https;
       int httpCode = HTTP_CODE_NOT_FOUND;
@@ -368,26 +357,22 @@ void getExtIP() {
   }
 }
 
-/************** generic WiFiClientSecure functions ******************/
+/************** generic NetworkClientSecure functions ******************/
 
 static uint8_t failCounts[REMFAILCNT] = {0};
 
-void remoteServerClose(WiFiClientSecure& sclient) {
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+void remoteServerClose(NetworkClientSecure& sclient) {
   if (sclient.available()) sclient.clear();
-#else
-  if (sclient.available()) sclient.flush();
-#endif
   if (sclient.connected()) sclient.stop();
 }
 
-bool remoteServerConnect(WiFiClientSecure& sclient, const char* serverName, uint16_t serverPort, const char* serverCert, uint8_t connIdx) {
+bool remoteServerConnect(NetworkClientSecure& sclient, const char* serverName, uint16_t serverPort, const char* serverCert, uint8_t connIdx) {
   // Connect to server if not already connected or previously disconnected
   if (sclient.connected()) return true;
   else {
     if (failCounts[connIdx] >= MAX_FAIL) {
       if (failCounts[connIdx] == MAX_FAIL) {
-        LOG_WRN("Abandon %s connection attempt", serverName);
+        LOG_ERR("Abandon %s connection attempt until next rollover", serverName);
         failCounts[connIdx] = MAX_FAIL + 1;
       }
     } else {
@@ -651,47 +636,36 @@ char* fmtSize (uint64_t sizeVal) {
   return returnStr;
 }
 
-void checkMemory(const char* source ) {
-  LOG_INF("%s Free: heap %u, block: %u, min: %u, pSRAM %u", source, ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap(), ESP.getFreePsram());
-  if (ESP.getFreeHeap() < WARN_HEAP) LOG_WRN("Free heap only %u, min %u", ESP.getFreeHeap(), ESP.getMinFreeHeap());
-  if (ESP.getMaxAllocHeap() < WARN_ALLOC) LOG_WRN("Max allocatable heap block is only %u", ESP.getMaxAllocHeap());
-}
-
-uint32_t checkStackUse(TaskHandle_t thisTask, int taskIdx) {
-  // get minimum free stack size for task since started
-  static uint32_t minStack[20]; 
-  uint32_t freeStack = 0;
-  if (thisTask != NULL) {
-    freeStack = (uint32_t)uxTaskGetStackHighWaterMark(thisTask);
-    if (!minStack[taskIdx]) {
-      minStack[taskIdx] = freeStack; // initialise
-      LOG_INF("Task %s on core %d, initial stack space %u", pcTaskGetTaskName(thisTask), xPortGetCoreID(), freeStack);
-    }
-    if (freeStack < minStack[taskIdx]) {
-      minStack[taskIdx] = freeStack;
-      if (freeStack < MIN_STACK_FREE) LOG_WRN("Task %s on core %d, stack space only: %u", pcTaskGetTaskName(thisTask), xPortGetCoreID(), freeStack);
-      else LOG_INF("Task %s on core %d, stack space reduced to %u", pcTaskGetTaskName(thisTask), xPortGetCoreID(), freeStack);
-    }
-  }
-  return freeStack;
-}
-
-void debugMemory(const char* caller) {
-  if (DEBUG_MEM) {
-    logPrint("%s > Free: heap %u, block: %u, min: %u, pSRAM %u\n", caller, ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap(), ESP.getFreePsram());
-    delay(FLUSH_DELAY);
-  }
-}
 
 void doRestart(const char* restartStr) {
   LOG_ALT("Controlled restart: %s", restartStr);
 #ifdef ISCAM
   appShutdown();
 #endif
+#if INCLUDE_MQTT
+  if (mqtt_active) stopMqttClient();
+#endif  
   resetCrashLoop();
   flush_log(true);
   delay(2000);
   ESP.restart();
+}
+
+static void boardInfo() {
+  LOG_INF("Chip %s, %d cores @ %dMhz, rev %d", ESP.getChipModel(), ESP.getChipCores(), ESP.getCpuFreqMHz(), ESP.getChipRevision() / 100);
+  FlashMode_t ideMode = ESP.getFlashChipMode();
+  LOG_INF("Flash %s, mode %s @ %dMhz", fmtSize(ESP.getFlashChipSize()), (ideMode == FM_QIO ? "QIO" : ideMode == FM_QOUT ? "QOUT" : ideMode == FM_DIO ? "DIO" : ideMode == FM_DOUT ? "DOUT" : "UNKNOWN"), ESP.getFlashChipSpeed() / OneMHz);
+
+#if defined(CONFIG_SPIRAM_MODE_OCT)
+  const char* psramMode = "OPI";
+#else 
+  const char* psramMode = "QSPI";
+#endif
+  char memInfo[100] = "none";
+#if !CONFIG_IDF_TARGET_ESP32C3
+  if (psramFound()) sprintf(memInfo, "%s, mode %s @ %dMhz", fmtSize(ESP.getPsramSize()), psramMode, CONFIG_SPIRAM_SPEED);
+#endif
+  LOG_INF("PSRAM %s", memInfo);
 }
 
 uint16_t smoothAnalog(int analogPin, int samples) {
@@ -715,6 +689,36 @@ float smoothSensor(float latestVal, float smoothedVal, float alpha) {
   return (latestVal * alpha) + smoothedVal * (1.0 - alpha);
 }
 
+// onboard chip temperature sensor
+#if CONFIG_IDF_TARGET_ESP32
+extern "C" {
+// Use internal on chip temperature sensor (if present)
+uint8_t temprature_sens_read(); // sic
+}
+#elif CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3
+#include "driver/temperature_sensor.h"
+static temperature_sensor_handle_t temp_sensor = NULL;
+#endif
+
+static void prepInternalTemp() {
+#if CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S3
+  // setup internal sensor
+  temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
+  temperature_sensor_install(&temp_sensor_config, &temp_sensor);
+  temperature_sensor_enable(temp_sensor);
+#endif
+}
+
+float readInternalTemp() {
+  float intTemp = NULL_TEMP;
+#if CONFIG_IDF_TARGET_ESP32
+  // convert on chip raw temperature in F to Celsius degrees
+  intTemp = (temprature_sens_read() - 32) / 1.8;  // value of 55 means not present
+#elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S3
+    temperature_sensor_get_celsius(temp_sensor, &intTemp); 
+#endif
+  return intTemp;
+}
 /*********************** Remote loggging ***********************/
 /*
  * Log mode selection in user interface: 
@@ -821,6 +825,7 @@ static void logTask(void *arg) {
 
 void logPrint(const char *format, ...) {
   // feeds logTask to format message, then outputs as required
+  if (logMutex == NULL) logSetup();
   if (xSemaphoreTake(logMutex, pdMS_TO_TICKS(logWait)) == pdTRUE) {
     strncpy(fmtBuf, format, MAX_OUT);
     va_start(arglist, format); 
@@ -851,7 +856,7 @@ void logPrint(const char *format, ...) {
     // output to web socket if open
     if (msgLen > 1) {
       outBuf[msgLen - 1] = 0; // lose final '/n'
-      if (wsLog) wsAsyncSend(outBuf);
+      if (wsLog) wsAsyncSendText(outBuf);
     }
     xSemaphoreGive(logMutex);
   } 
@@ -868,7 +873,7 @@ void logSetup() {
   printf("\n\n");
   if (DEBUG_MEM) printf("init > Free: heap %lu\n", ESP.getFreeHeap()); 
   if (!DBG_ON) esp_log_level_set("*", ESP_LOG_NONE); // suppress ESP_LOG_ERROR messages
-  if (crashLoop == MAGIC_NUM) snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Crash loop detected");
+  if (crashLoop == MAGIC_NUM) snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Crash loop detected, check log %s", (brownoutStatus == 'B' || brownoutStatus == 'R') ? "(brownout)" : " ");
   crashLoop = MAGIC_NUM;
   logSemaphore = xSemaphoreCreateBinary(); // flag that log message formatted
   logMutex = xSemaphoreCreateMutex(); // control access to log formatter
@@ -879,11 +884,13 @@ void logSetup() {
   LOG_INF("Setup RAM based log, size %u, starting from %u\n\n", RAM_LOG_LEN, mlogEnd);
   LOG_INF("=============== %s %s ===============", APP_NAME, APP_VER);
   initBrownout();
-  LOG_INF("Compiled with arduino-esp32 v%d.%d.%d", ESP_ARDUINO_VERSION_MAJOR, ESP_ARDUINO_VERSION_MINOR, ESP_ARDUINO_VERSION_PATCH);
-  ////LOG_INF(" ESP32 Arduino core version: %s", ESP_ARDUINO_VERSION_STR);
+  prepInternalTemp();
+  boardInfo();
+  LOG_INF("Compiled with arduino-esp32 v%s", ESP_ARDUINO_VERSION_STR);
   wakeupResetReason();
-  if (alertBuffer == NULL) alertBuffer = (byte*)ps_malloc(MAX_ALERT); 
-  debugMemory("logSetup"); 
+  if (alertBuffer == NULL) alertBuffer = psramFound() ? (byte*)ps_malloc(maxAlertBuffSize) : (byte*)malloc(maxAlertBuffSize); 
+  if (jsonBuff == NULL) jsonBuff = psramFound() ? (char*)ps_malloc(JSON_BUFF_LEN) : (char*)malloc(JSON_BUFF_LEN); 
+  debugMemory("logSetup");
 }
 
 void formatHex(const char* inData, size_t inLen) {
@@ -942,47 +949,151 @@ const char* encode64(const char* inp) {
 }
 
 
-/************** qualitive core idle time monitoring *************/
+/************** task monitoring ***************/
 
-// not working properly
-#include "esp_freertos_hooks.h"
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 1, 0)
 
-#define INTERVAL_TIME 100 // reporting interval in ms
-#define TICKS_PER_INTERVAL (pdMS_TO_TICKS(INTERVAL_TIME))
-
-static uint32_t idleCalls[portNUM_PROCESSORS] = {0};
-static uint32_t idleCnt[portNUM_PROCESSORS];
-
-static bool hookCallback() {
-  idleCalls[xPortGetCoreID()]++;
-  return true;
-}
-
-uint32_t* reportIdle() {
-  static uint32_t idlePercent[portNUM_PROCESSORS];
-  for (int i = 0; i < portNUM_PROCESSORS; i++)
-    idlePercent[i] = (100 * idleCnt[i]) / TICKS_PER_INTERVAL;
-  return idlePercent;
-}
-
-static void idleMonTask(void* p) {
-  while (true) {
-    for (int i = 0; i < portNUM_PROCESSORS; i++) {
-      idleCnt[i] = idleCalls[i];
-      idleCalls[i] = 0;
-    }
-    vTaskDelay(TICKS_PER_INTERVAL);
+static const char* getTaskStateString(eTaskState state) {
+  // 
+  switch (state) { 
+    case eRunning: return "Running"; 
+    case eReady: return "Ready"; 
+    case eBlocked: return "Blocked"; 
+    case eSuspended: return "Suspended"; 
+    case eDeleted: return "Deleted"; 
+    case eInvalid: return "Invalid"; 
+    default: return "Unknown";
   }
-  vTaskDelete(NULL);
 }
 
-void startIdleMon() {
-  // report on each core idle time per interval
-  // Core 0: wifi, Core 1: Arduino
-  LOG_INF("Start core idle time monitoring @ interval %ums", INTERVAL_TIME);
-  for (int i = 0; i < portNUM_PROCESSORS; i++) 
-    esp_register_freertos_idle_hook_for_cpu(hookCallback, i);
-  xTaskCreatePinnedToCore(idleMonTask, "idlemon", 1024, NULL, IDLEMON_PRI, NULL, 0);
+static void statsTask(void *arg) { 
+  // Output real time task stats periodically
+  #define STATS_TASK_PRIO     10
+  #define STATS_INTERVAL      30000 // ms
+  #define ARRAY_SIZE_OFFSET   40   // Increase this if ESP_ERR_INVALID_SIZE
+
+  static configRUN_TIME_COUNTER_TYPE prevRunCounter = 0;
+  esp_err_t ret = ESP_OK;  
+  TaskStatus_t *statsArray = NULL;
+  UBaseType_t statsArraySize;
+  configRUN_TIME_COUNTER_TYPE runCounter;
+      
+  while (true) {
+    delay(STATS_INTERVAL);
+
+    do { // fake loop for breaks
+      // Allocate array to store current task states
+      statsArraySize = uxTaskGetNumberOfTasks() + ARRAY_SIZE_OFFSET;
+      statsArray = (TaskStatus_t *)malloc(sizeof(TaskStatus_t) * statsArraySize);
+      if (statsArray == NULL) {
+        ret = ESP_ERR_NO_MEM;
+        break;
+      }
+
+      // Get current task states
+      statsArraySize = uxTaskGetSystemState(statsArray, statsArraySize, &runCounter);
+      if (statsArraySize == 0) {
+        ret = ESP_ERR_INVALID_SIZE;
+        break;
+      }
+
+      // Calculate total_elapsed_time in units of run time stats clock period
+      if (runCounter - prevRunCounter == 0) {
+        ret = ESP_ERR_INVALID_STATE;
+        break;
+      }
+
+      printf("\nTask stats interval %lums on %u cores\n", (runCounter - prevRunCounter) / 1000, CONFIG_FREERTOS_NUMBER_OF_CORES);
+      printf("\n| %-16s | %-10s | %-3s | %-4s | %-6s |\n", "Task name", "State", "Pri", "Core", "Core%");
+      printf("|------------------|------------|-----|------|--------|\n"); 
+      // Match each task in start_array to those in the end_array
+      for (int i = 0; i < statsArraySize; i++) {
+        float percentage_time = ((float)statsArray[i].ulRunTimeCounter * 100.0) / runCounter;
+        printf("| %-16s | %-10s | %*u | %*s | %*.1f%% |\n", 
+          statsArray[i].pcTaskName, getTaskStateString(statsArray[i].eCurrentState), 3, (int)statsArray[i].uxCurrentPriority, 4, "tbd", 5, percentage_time);
+      }
+      printf("|------------------|------------|-----|------|--------|\n"); 
+    } while (false);
+
+    prevRunCounter = runCounter;
+    free(statsArray);
+    if (ret != ESP_OK) LOG_WRN("Failed to start task monitoring %s", espErrMsg(ret));
+  }
+}
+
+void runTaskStats() {
+  // invoke task stats monitoring
+  // Allow other core to finish initialization
+  vTaskDelay(pdMS_TO_TICKS(100));
+  // Create and start stats task
+  xTaskCreatePinnedToCore(statsTask, "statsTask", 4096, NULL, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
+}
+#endif
+
+void checkMemory(const char* source) {
+  LOG_INF("%s Free: heap %u, block: %u, min: %u, pSRAM %u", strlen(source) ? source : "Setup", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap(), ESP.getFreePsram());
+  if (ESP.getFreeHeap() < WARN_HEAP) LOG_WRN("Free heap only %u, min %u", ESP.getFreeHeap(), ESP.getMinFreeHeap());
+  if (ESP.getMaxAllocHeap() < WARN_ALLOC) LOG_WRN("Max allocatable heap block is only %u", ESP.getMaxAllocHeap());
+  if (!strlen(source) && DEBUG_MEM) {
+    printGpioInfo();
+    runTaskStats();
+  }
+}
+
+uint32_t checkStackUse(TaskHandle_t thisTask, int taskIdx) {
+  // get minimum free stack size for task since started
+  // taskIdx used to index minStack[] array
+  static uint32_t minStack[20]; 
+  uint32_t freeStack = 0;
+  if (thisTask != NULL) {
+    freeStack = (uint32_t)uxTaskGetStackHighWaterMark(thisTask);
+    if (!minStack[taskIdx]) {
+      minStack[taskIdx] = freeStack; // initialise
+      LOG_INF("Task %s on core %d, initial stack space %u", pcTaskGetTaskName(thisTask), xPortGetCoreID(), freeStack);
+    }
+    if (freeStack < minStack[taskIdx]) {
+      minStack[taskIdx] = freeStack;
+      if (freeStack < MIN_STACK_FREE) LOG_WRN("Task %s on core %d, stack space only: %u", pcTaskGetTaskName(thisTask), xPortGetCoreID(), freeStack);
+      else LOG_INF("Task %s on core %d, stack space reduced to %u", pcTaskGetTaskName(thisTask), xPortGetCoreID(), freeStack);
+    }
+  }
+  return freeStack;
+}
+
+void debugMemory(const char* caller) {
+  if (DEBUG_MEM) {
+    logPrint("%s > Free: heap %u, block: %u, min: %u, pSRAM %u\n", caller, ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap(), ESP.getFreePsram());
+    delay(FLUSH_DELAY);
+  }
+}
+
+#include "esp32-hal-periman.h"
+static void printGpioInfo() {
+  // from https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/chip-debug-report.cpp
+  printf("Assigned GPIO Info:\n");
+  for (uint8_t i = 0; i < SOC_GPIO_PIN_COUNT; i++) {
+    if (!perimanPinIsValid(i)) continue;  //invalid pin
+    peripheral_bus_type_t type = perimanGetPinBusType(i);
+    if (type == ESP32_BUS_TYPE_INIT) continue;  //unused pin
+
+#if defined(BOARD_HAS_PIN_REMAP)
+    int dpin = gpioNumberToDigitalPin(i);
+    if (dpin < 0) continue;  //pin is not exported
+    else printf("  D%-3d|%4u : ", dpin, i);
+#else
+    printf("  %4u : ", i);
+#endif
+    const char *extra_type = perimanGetPinBusExtraType(i);
+    if (extra_type) printf("%s", extra_type);
+    else printf("%s", perimanGetTypeName(type));
+    int8_t bus_number = perimanGetPinBusNum(i);
+    if (bus_number != -1) printf("[%u]", bus_number);
+
+    int8_t bus_channel = perimanGetPinBusChannel(i);
+    if (bus_channel != -1) printf("[%u]", bus_channel);
+    printf("\n");
+  }
+  printf("\n");
 }
 
 
@@ -1006,7 +1117,6 @@ static esp_sleep_wakeup_cause_t printWakeupReason() {
   return wakeup_reason;
 }
 
-RTC_NOINIT_ATTR char brownoutStatus;
 
 static esp_reset_reason_t printResetReason() {
   esp_reset_reason_t bootReason = esp_reset_reason();
@@ -1071,12 +1181,8 @@ void goToSleep(int wakeupPin, bool deepSleep) {
 //https://github.com/espressif/esp-idf/blob/master/components/esp_system/port/brownout.c
 
 #include "esp_private/system_internal.h"
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
 #include "esp_private/rtc_ctrl.h"
 #include "hal/brownout_ll.h"
-#else
-#include "driver/rtc_cntl.h" // v2.x
-#endif
 
 #include "soc/rtc_periph.h"
 #include "hal/brownout_hal.h"
@@ -1087,7 +1193,7 @@ IRAM_ATTR static void notifyBrownout(void *arg) {
   esp_cpu_stall(!xPortGetCoreID());  // Stop the other core.
   esp_reset_reason_set_hint(ESP_RST_BROWNOUT);
   brownoutStatus = 'B';
-  esp_restart_noos();
+  esp_restart_noos(); // dirty reboot
 }
 
 static void initBrownout(void) {
@@ -1105,13 +1211,9 @@ static void initBrownout(void) {
       .rf_power_down = true,
     };
     brownout_hal_config(&cfg);
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
     brownout_ll_intr_clear();
     rtc_isr_register(notifyBrownout, NULL, RTC_CNTL_BROWN_OUT_INT_ENA_M, RTC_INTR_FLAG_IRAM);
     brownout_ll_intr_enable(true);
-#else
-    rtc_isr_register(notifyBrownout, NULL, RTC_CNTL_BROWN_OUT_INT_ENA_M);
-#endif
     brownoutStatus = 0; 
   }
 }
