@@ -39,11 +39,9 @@ void setup() {
 #endif
 
   // connect wifi or start config AP if router details not available
-  startWifi(); 
+  startNetwork(); 
   
-  startWebServer();
-  if (strlen(startupFailure)) LOG_ERR("%s", startupFailure);
-  else {
+  if (startWebServer()) {
     // start rest of services
     appSetup();
     checkMemory();

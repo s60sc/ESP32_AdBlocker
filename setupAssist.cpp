@@ -10,22 +10,20 @@
 const char* git_rootCACertificate = "";
 #endif
 
-static fs::FS fp = STORAGE;
-
 static bool wgetFile(const char* filePath) {
   // download required data file from github repository and store
   bool res = false;
-  if (fp.exists(filePath)) {
+  if (STORAGE.exists(filePath)) {
     // if file exists but is empty, delete it to allow re-download
-    File f = fp.open(filePath, FILE_READ);
+    File f = STORAGE.open(filePath, FILE_READ);
     size_t fSize = f.size();
     f.close();
-    if (!fSize) fp.remove(filePath);
+    if (!fSize) STORAGE.remove(filePath);
   }
-  if (!fp.exists(filePath)) {
+  if (!STORAGE.exists(filePath)) {
     char downloadURL[150];
     snprintf(downloadURL, 150, "%s%s", GITHUB_PATH, filePath);
-    File f = fp.open(filePath, FILE_WRITE);
+    File f = STORAGE.open(filePath, FILE_WRITE);
     if (f) {
       NetworkClientSecure wclient;
       if (remoteServerConnect(wclient, GITHUB_HOST, HTTPS_PORT, git_rootCACertificate, SETASSIST)) {
@@ -48,7 +46,7 @@ static bool wgetFile(const char* filePath) {
             res = true;
           } else {
             LOG_WRN("HTTP Get failed with code: %d", httpCode);
-            fp.remove(filePath);
+            STORAGE.remove(filePath);
           }
         }
       } 

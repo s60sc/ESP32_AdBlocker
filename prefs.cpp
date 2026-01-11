@@ -27,7 +27,6 @@
 
 #include "appGlobals.h"
 
-static fs::FS fp = STORAGE;
 static std::vector<std::vector<std::string>> configs;
 static Preferences prefs; 
 static char appId[16];
@@ -86,10 +85,12 @@ bool updateConfigVect(const char* variable, const char* value) {
   std::string thisVal(value);
   int keyPos = getKeyPos(thisKey);
   if (keyPos >= 0) {
-    // update value
-    if (psramFound()) heap_caps_malloc_extmem_enable(MIN_RAM); 
-    configs[keyPos][1] = thisVal;
-    if (psramFound()) heap_caps_malloc_extmem_enable(MAX_RAM);
+    // update value unless read only, eg button
+    if (configs[keyPos][3] != "A") {
+      if (psramFound()) heap_caps_malloc_extmem_enable(MIN_RAM); 
+      configs[keyPos][1] = thisVal;
+      if (psramFound()) heap_caps_malloc_extmem_enable(MAX_RAM);
+    }
     return true;    
   }
   return false; 
@@ -128,7 +129,7 @@ static void loadVectItem(const std::string keyValGrpLabel) {
 }
 
 static void saveConfigVect() {
-  File file = fp.open(CONFIG_FILE_PATH, FILE_WRITE);
+  File file = STORAGE.open(CONFIG_FILE_PATH, FILE_WRITE);
   char configLine[FILE_NAME_LEN + 101];
   if (!file) LOG_WRN("Failed to save to configs file");
   else {
@@ -152,7 +153,7 @@ static bool loadConfigVect() {
   if (psramFound()) heap_caps_malloc_extmem_enable(MIN_RAM); 
   configs.reserve(MAX_CONFIGS);
   // extract each config line from file
-  File file = fp.open(CONFIG_FILE_PATH, FILE_READ);
+  File file = STORAGE.open(CONFIG_FILE_PATH, FILE_READ);
   while (file.available()) {
     String configLineStr = file.readStringUntil('\n');
     if (configLineStr.length()) loadVectItem(configLineStr.c_str());
@@ -255,7 +256,7 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
   else if (!strcmp(variable, "ST_gw")) strncpy(ST_gw, value, MAX_IP_LEN-1);
   else if (!strcmp(variable, "ST_sn")) strncpy(ST_sn, value, MAX_IP_LEN-1);
   else if (!strcmp(variable, "ST_ns1")) strncpy(ST_ns1, value, MAX_IP_LEN-1);
-  else if (!strcmp(variable, "ST_ns1")) strncpy(ST_ns2, value, MAX_IP_LEN-1);
+  else if (!strcmp(variable, "ST_ns2")) strncpy(ST_ns2, value, MAX_IP_LEN-1);
   else if (!strcmp(variable, "Auth_Name")) strncpy(Auth_Name, value, MAX_HOST_LEN-1);
   else if (!strcmp(variable, "Auth_Pass") && value[0] != '*') strncpy(Auth_Pass, value, MAX_PWD_LEN-1);
   else if (!strcmp(variable, "AP_ip")) strncpy(AP_ip, value, MAX_IP_LEN-1);
@@ -267,6 +268,13 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
   else if (!strcmp(variable, "useHttps")) useHttps = (bool)intVal;
   else if (!strcmp(variable, "useSecure")) useSecure = (bool)intVal;
   else if (!strcmp(variable, "doGetExtIP")) doGetExtIP = (bool)intVal;  
+  else if (!strcmp(variable, "netMode")) netMode = intVal;
+  else if (!strcmp(variable, "ethCS")) ethCS = intVal;
+  else if (!strcmp(variable, "ethInt")) ethInt = intVal;
+  else if (!strcmp(variable, "ethRst")) ethRst = intVal;
+  else if (!strcmp(variable, "ethSclk")) ethSclk = intVal;
+  else if (!strcmp(variable, "ethMiso")) ethMiso = intVal;
+  else if (!strcmp(variable, "ethMosi")) ethMosi = intVal;
   else if (!strcmp(variable, "extIP")) strncpy(extIP, value, MAX_IP_LEN-1);
 #if INCLUDE_TGRAM
   else if (!strcmp(variable, "tgramUse")) {
@@ -350,7 +358,6 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
   } 
   else if (!strcmp(variable, "logType")) {
     logType = intVal;
-    wsLog = (logType == 1) ? true : false;
     remote_log_init();
   } 
   else if (!strcmp(variable, "sdLog")) {
@@ -372,17 +379,21 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
     }
     doRestart("user requested restart after data deletion"); 
   }
+  else if (!strcmp(variable, "showsys")) showSys();
   else if (!strcmp(variable, "save")) {
     if (intVal) savePrefs();
     saveConfigVect();
   } else {
     res = updateAppStatus(variable, value, fromUser);
     if (!res) {
-      if (fromUser) LOG_WRN("Unable to config %s as required cpp file not included", variable);
+      if (fromUser) {
+        updateConfigVect(variable, value); // in case value previously set in different compilation state
+        LOG_WRN("Unable to use %s as required cpp file not included", variable);
+      }
       else LOG_VRB("Unrecognised config: %s", variable);
     }
   }
-  if (res) updateConfigVect(variable, value);  
+  if (res) updateConfigVect(variable, value);
 }
 
 void buildJsonString(uint8_t filter) {
@@ -394,8 +405,6 @@ void buildJsonString(uint8_t filter) {
     buildAppJsonString((bool)filter);
     p += strlen(jsonBuff) - 1;
     p += sprintf(p, "\"cfgGroup\":\"-1\",");
-    p += sprintf(p, "\"alertMsg\":\"%s\",", alertMsg); 
-    alertMsg[0] = 0;
     // generic footer
     currEpoch = getEpoch(); 
     p += sprintf(p, "\"clockUTC\":\"%lu\",", (uint32_t)currEpoch); 
@@ -405,13 +414,7 @@ void buildJsonString(uint8_t filter) {
     formatElapsedTime(timeBuff, millis()); // rolls over after 49.7 days due to max uint32
     p += sprintf(p, "\"up_time\":\"%s\",", timeBuff);   
     p += sprintf(p, "\"free_heap\":\"%s\",", fmtSize(ESP.getFreeHeap()));    
-    p += sprintf(p, "\"wifi_rssi\":\"%i dBm\",", WiFi.RSSI() );  
-    p += sprintf(p, "\"fw_version\":\"%s\",", APP_VER); 
-    p += sprintf(p, "\"macAddressEfuse\":\"%012llX\",", ESP.getEfuseMac() ); 
-    p += sprintf(p, "\"macAddressWiFi\":\"%s\",", WiFi.macAddress().c_str() ); 
-    p += sprintf(p, "\"extIP\":\"%s\",", extIP); 
-    p += sprintf(p, "\"httpPort\":\"%u\",", HTTP_PORT); 
-    p += sprintf(p, "\"httpsPort\":\"%u\",", HTTPS_PORT); 
+    p += sprintf(p, "\"wifi_rssi\":\"%i dBm\",", netRSSI() );  
     if (!filter) {
       // populate first part of json string from config vect
       for (const auto& row : configs) 
@@ -433,6 +436,14 @@ void buildJsonString(uint8_t filter) {
 #if INCLUDE_RTSP
       p += sprintf(p, "\"RTSP_Pass\":\"%.*s\",", strlen(RTSP_Pass), FILLSTAR);
 #endif
+      // session constants
+      p += sprintf(p, "\"fw_version\":\"%s\",", APP_VER); 
+      p += sprintf(p, "\"macAddressEfuse\":\"%012llX\",", ESP.getEfuseMac() ); 
+      p += sprintf(p, "\"macAddressWiFi\":\"%s\",", netMacAddress().c_str() ); 
+      p += sprintf(p, "\"extIP\":\"%s\",", extIP); 
+      p += sprintf(p, "\"httpPort\":\"%u\",", HTTP_PORT); 
+      p += sprintf(p, "\"httpsPort\":\"%u\",", HTTPS_PORT); 
+      p += sprintf(p, "\"ip\":\"%s\",", netLocalIP().toString().c_str());
     }
   } else {
     // build json string for requested config group
@@ -471,7 +482,7 @@ static bool checkConfigFile() {
   File file;
   if (!STORAGE.exists(CONFIG_FILE_PATH)) {
     // create from default in appGlobals.h
-    file = fp.open(CONFIG_FILE_PATH, FILE_WRITE);
+    file = STORAGE.open(CONFIG_FILE_PATH, FILE_WRITE);
     if (file) {
       // apply initial defaults
       file.write((uint8_t*)appConfig, strlen(appConfig));
@@ -496,7 +507,7 @@ static bool checkConfigFile() {
 
   // file exists, check if valid
   bool goodFile = true;
-  file = fp.open(CONFIG_FILE_PATH, FILE_READ);
+  file = STORAGE.open(CONFIG_FILE_PATH, FILE_READ);
   if (!file || !file.size()) {
     LOG_WRN("Failed to load file %s", CONFIG_FILE_PATH);
     goodFile = false;
@@ -536,6 +547,14 @@ bool loadConfig() {
     loadPrefs(); // overwrites any corresponding entries in config
     // load variables from stored config vector
     reloadConfigs();
+#if INCLUDE_CERTS
+    loadCerts();
+#else
+  if (useHttps) {
+    LOG_WRN("Need to compile with INCLUDE_CERTS true to use HTTPS");
+    useHttps = false;
+  }
+#endif
     debugMemory("loadConfig");
     return true;
   }

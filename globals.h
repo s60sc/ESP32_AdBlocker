@@ -10,7 +10,7 @@
 
 #pragma once
 
-//#define DEV_ONLY // leave commented out
+#//define DEV_ONLY // leave commented out
 #ifdef DEV_ONLY
 // to compile with -Wall -Werror=all -Wextra
 #pragma GCC diagnostic error "-Wformat=2"
@@ -41,6 +41,10 @@
 #include <sstream>
 #include <Update.h>
 #include <WiFi.h>
+#include <ETH.h>
+#ifdef APP_BT_ENABLED
+#include <esp_bt.h>
+#endif
 #include <HTTPClient.h>
 #include <NetworkClient.h> 
 #include <NetworkClientSecure.h> 
@@ -74,7 +78,6 @@
 #define COMMON_JS_PATH DATA_DIR "/common" JS_EXT 
 #define WEBDAV "/webdav"
 #define GITHUB_HOST "raw.githubusercontent.com"
-
 #define FILLSTAR "****************************************************************"
 #define DELIM '~'
 #define ONEMEG (1024 * 1024)
@@ -93,6 +96,7 @@
 #define USECS 1000000
 #define MAGIC_NUM 987654321
 #define MAX_FAIL 5
+#define PANIC_DELAY 5 // seconds before restart after panic
 
 // global mandatory app specific functions, in appSpecific.cpp 
 bool appDataFiles();
@@ -104,7 +108,8 @@ void appSpecificTelegramTask(void* p);
 void buildAppJsonString(bool filter);
 bool updateAppStatus(const char* variable, const char* value, bool fromUser = true);
 
-// global general utility functions in utils.cpp / utilsFS.cpp / peripherals.cpp    
+// global general utility functions in utils.cpp / utilsFS.cpp / peripherals.cpp etc
+void appPanicHandler(arduino_panic_info_t *info, void *arg);
 void buildJsonString(uint8_t filter);
 bool calcProgress(int progressVal, int totalVal, int percentReport, uint8_t &pcProgress);
 bool changeExtension(char* fileName, const char* newExt);
@@ -145,12 +150,13 @@ size_t getFreeStorage();
 uint32_t getFrequency();
 bool getLocalNTP();
 float getNTCcelsius(uint16_t resistance, float oldTemp);
-void goToSleep(int wakeupPin, bool deepSleep);
+void goToSleep(bool deepSleep);
 bool handleWebDav(httpd_req_t* rreq);
 void initStatus(int cfgGroup, int delayVal);
 void killSocket(int skt = -99);
 void listBuff(const uint8_t* b, size_t len); 
 bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* extension);
+void loadCerts();
 bool loadConfig();
 void logLine();
 void logPrint(const char *fmtStr, ...);
@@ -175,24 +181,26 @@ void remoteServerReset();
 void removeChar(char* s, char c);
 void replaceChar(char* s, char c, char r);
 void reset_log();
-void resetWatchDog();
+void resetWatchDog(int wdIndex, uint32_t wdTimeout = 1);
 bool retrieveConfigVal(const char* variable, char* value);
-void runTaskStats();
+void runTaskStats(bool _onceOnly = false);
 esp_err_t sendChunks(File df, httpd_req_t *req, bool endChunking = true);
+void sendSSE(const char* eventType, const char* eventData);
 void setFolderName(const char* fname, char* fileName);
 void setPeripheralResponse(const byte pinNum, const uint32_t responseData);
 void setupADC();
-void showProgress(const char* marker = ".");
 void showHttpHeaders(httpd_req_t *req);
+void showProgress(const char* marker = ".");
+void showSys();
 uint16_t smoothAnalog(int analogPin, int samples = ADC_SAMPLES);
 float smoothSensor(float latestVal, float smoothedVal, float alpha);
 void startOTAtask();
 void startSecTimer(bool startTimer);
 bool startStorage();
-void startWebServer();
-bool startWifi(bool firstcall = true);
+bool startWebServer();
 void stopPing();
 void syncToBrowser(uint32_t browserUTC);
+char* trim(char* str);
 bool updateConfigVect(const char* variable, const char* value);
 void updateStatus(const char* variable, const char* _value, bool fromUser = true);
 esp_err_t uploadHandler(httpd_req_t *req);
@@ -201,7 +209,15 @@ bool urlEncode(const char* inVal, char* encoded, size_t maxSize);
 uint32_t usePeripheral(const byte pinNum, const uint32_t receivedData);
 esp_sleep_wakeup_cause_t wakeupResetReason();
 void wsAsyncSendBinary(uint8_t* data, size_t len);
+bool wsAsyncSendJson(const char* dataType, const char* wsData);
 bool wsAsyncSendText(const char* wsData);
+// unified networking helpers (WiFi or Ethernet)
+bool startNetwork(bool firstcall = true);
+IPAddress netLocalIP();
+IPAddress netGatewayIP();
+String netMacAddress();
+int netRSSI();
+bool netIsConnected();
 // mqtt.cpp
 void startMqttClient();  
 void stopMqttClient();  
@@ -224,6 +240,7 @@ extern char AP_ip[];
 extern char AP_sn[];
 extern char AP_gw[];
 
+extern int netMode; // 0=WiFi, 1=Ethernet, 2=Eth+AP
 extern char hostName[]; //Host name for ddns
 extern char ST_SSID[]; //Router ssid
 extern char ST_Pass[]; //Router passd
@@ -238,6 +255,13 @@ extern char ST_ns1[];
 extern char ST_ns2[];
 extern char extIP[];
 
+extern int ethCS;   // chip select
+extern int ethInt;  // interrupt
+extern int ethRst;  // reset
+extern int ethSclk; // SPI clock
+extern int ethMiso; // SPI data pin
+extern int ethMosi; // SPI data pin
+
 extern char Auth_Name[]; 
 extern char Auth_Pass[];
 
@@ -250,10 +274,10 @@ extern bool dataFilesChecked;
 extern char ipExtAddr[];
 extern bool doGetExtIP;
 extern bool usePing; // set to false if problems related to this issue occur: https://github.com/s60sc/ESP32-CAM_MJPEG2SD/issues/221
-extern bool wsLog;
 extern uint16_t sustainId;
 extern bool heartBeatDone;
 extern TaskHandle_t heartBeatHandle;
+extern char portFwd[];
 
 // remote file server
 extern char fsServer[];
@@ -285,6 +309,7 @@ extern char mqtt_topic_prefix[];
 
 // control sending alerts 
 extern size_t alertBufferSize;
+extern size_t maxAlertBuffSize;
 extern byte* alertBuffer;
 
 // Telegram
@@ -300,8 +325,7 @@ extern const char* smtp_rootCACertificate;
 extern const char* mqtt_rootCACertificate;
 extern const char* telegram_rootCACertificate;
 extern const char* hfs_rootCACertificate;
-extern const char* prvtkey_pem; // app https server private key
-extern const char* cacert_pem; // app https server public certificate
+extern char* serverCerts[];
 
 // app status
 extern char timezone[];
@@ -310,7 +334,6 @@ extern uint8_t alarmHour;
 extern char* jsonBuff; 
 extern bool dbgVerbose;
 extern bool sdLog;
-extern char alertMsg[];
 extern int logType;
 extern char messageLog[];
 extern uint16_t mlogEnd;
@@ -324,8 +347,11 @@ extern const char* failPageE_html;
 extern char startupFailure[];
 extern time_t currEpoch;
 extern bool RCactive;
+extern int wakePin;
+extern int wakeLevel;
 
 extern UBaseType_t uxHighWaterMarkArr[];
+extern UBaseType_t HEAP_MEM;
 
 // SD storage
 extern int sdMinCardFreeSpace; // Minimum amount of card free Megabytes before freeSpaceMode action is enabled

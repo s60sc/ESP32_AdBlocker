@@ -1,12 +1,12 @@
 
 // General utilities not specific to this app to support:
-// - wifi
+// - wifi / ethernet
 // - NTP
 // - remote logging
 // - base64 encoding
 // - device sleep
 //
-// s60sc 2021, 2023
+// s60sc 2021, 2023, 2025
 // some functions based on code contributed by gemi254
 
 #include "appGlobals.h"
@@ -23,11 +23,15 @@ byte* alertBuffer = NULL; // buffer for telegram / smtp alert image
 RTC_NOINIT_ATTR uint32_t crashLoop;
 RTC_NOINIT_ATTR char brownoutStatus;
 static void initBrownout(void);
+static void printPartitionTable();
 int wakePin; // if wakeUse is true
+int wakeLevel; // if wakeUse is true
 bool wakeUse = false; // true to allow app to sleep and wake
 char* jsonBuff = NULL;
+char portFwd[6] = "";
+UBaseType_t HEAP_MEM; // allow some task stacks to use psram if available
 
-/************************** Wifi **************************/
+/************************** Network (WiFi/Ethernet) **************************/
 
 #include <esp_task_wdt.h>
  
@@ -52,6 +56,14 @@ char AP_ip[MAX_IP_LEN]  = ""; // Leave blank to use 192.168.4.1
 char AP_sn[MAX_IP_LEN]  = "";
 char AP_gw[MAX_IP_LEN]  = "";
 
+// SPI pins for Ethernet
+int ethCS = -1; // W5500 chip select / LAN8720 MDC
+int ethInt = -1; // W5500 interrupt / LAN8720 MDIO
+int ethRst = -1; // W5500 reset / LAN8720 POWER
+int ethSclk = -1; // W5500 SPI clock / LAN8720 CLOCK
+int ethMiso = -1; // W5500 SPI data pin
+int ethMosi = -1; // W5500 SPI data pin
+
 // basic HTTP Authentication access to web page
 char Auth_Name[MAX_HOST_LEN] = ""; 
 char Auth_Pass[MAX_PWD_LEN] = "";
@@ -65,6 +77,13 @@ bool usePing = true;
 
 static void startPing();
 static void printGpioInfo();
+static void boardInfo();
+
+int netMode = 0; // 0=WiFi only, 1=Ethernet only, 2=Ethernet+AP
+
+// LAN8720
+#define ETH_PHY_ADDR  0 
+#define ETH_CLK_MODE  ETH_CLOCK_GPIO0_IN // external clock from crystal oscillator
 
 static void setupMdnsHost() {  
   // set up MDNS service 
@@ -72,11 +91,10 @@ static void setupMdnsHost() {
   snprintf(mdnsName, MAX_IP_LEN, "%.*s", MAX_IP_LEN - 1, hostName);
   if (MDNS.begin(mdnsName)) {
     // Add service to MDNS
-    MDNS.addService("http", "tcp", HTTP_PORT);
-    MDNS.addService("https", "tcp", HTTPS_PORT);
-    //MDNS.addService("ws", "udp", 83);
-    //MDNS.addService("ftp", "tcp", 21);    
-    LOG_INF("mDNS service: http://%s.local", mdnsName);
+    useHttps ? MDNS.addService("https", "tcp", HTTPS_PORT) : MDNS.addService("http", "tcp", HTTP_PORT);
+    MDNS.addService("ws", "udp", 83);
+    MDNS.addService("ftp", "tcp", 21);    
+    LOG_INF("mDNS service: http%s://%s.local", useHttps ? "s" : "", mdnsName);
   } else LOG_WRN("mDNS host: %s Failed", mdnsName);
   debugMemory("setupMdnsHost");
 }
@@ -109,28 +127,28 @@ const char* getEncType(int ssidIndex) {
   }
 }
 
-static void onWiFiEvent(WiFiEvent_t event) {
-  // callback to report on wifi events
+static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  // callback to report on network events
   switch (event) {
     case ARDUINO_EVENT_WIFI_READY: break;
     case ARDUINO_EVENT_WIFI_SCAN_DONE: break;
     case ARDUINO_EVENT_WIFI_STA_START: LOG_INF("Wifi Station started, connecting to: %s", ST_SSID); break;
     case ARDUINO_EVENT_WIFI_STA_STOP: LOG_INF("Wifi Station stopped %s", ST_SSID); break;
     case ARDUINO_EVENT_WIFI_AP_START: {
-      if (strlen(AP_SSID) && !strcmp(WiFi.softAPSSID().c_str(), AP_SSID)) {
-        LOG_INF("Wifi AP SSID: %s started, use '%s://%s' to connect", WiFi.softAPSSID().c_str(), useHttps ? "https" : "http", WiFi.softAPIP().toString().c_str());
+      if (strlen(AP_SSID) && !strcmp(WiFi.AP.SSID().c_str(), AP_SSID)) {
+        LOG_INF("Wifi AP SSID: %s started, use 'http%s://%s' to connect", WiFi.AP.SSID().c_str(), useHttps ? "s" : "", WiFi.AP.localIP().toString().c_str());
         APstarted = true;
       }
       break;
     }
     case ARDUINO_EVENT_WIFI_AP_STOP: {
-      if (!strcmp(WiFi.softAPSSID().c_str(), AP_SSID)) {
+      if (!strcmp(WiFi.AP.SSID().c_str(), AP_SSID)) {
         LOG_INF("Wifi AP stopped: %s", AP_SSID);
         APstarted = false;
       }
       break;
     }
-    case ARDUINO_EVENT_WIFI_STA_GOT_IP: LOG_INF("Wifi Station IP, use '%s://%s' to connect", useHttps ? "https" : "http", WiFi.localIP().toString().c_str()); break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP: LOG_INF("Wifi Station IP, use '%s://%s' to connect", useHttps ? "https" : "http", WiFi.STA.localIP().toString().c_str()); break;
     case ARDUINO_EVENT_WIFI_STA_LOST_IP: LOG_INF("Wifi Station lost IP"); break;
     case ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED: break;
     case ARDUINO_EVENT_WIFI_STA_CONNECTED: LOG_INF("WiFi Station connection to %s, using hostname: %s", ST_SSID, hostName); break;
@@ -140,23 +158,43 @@ static void onWiFiEvent(WiFiEvent_t event) {
     case ARDUINO_EVENT_WIFI_AP_PROBEREQRECVED: break;
     case ARDUINO_EVENT_WIFI_AP_GOT_IP6: LOG_INF("AP interface V6 IP addr is preferred"); break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP6: LOG_INF("Station interface V6 IP addr is preferred"); break;
-    default: LOG_WRN("WiFi Unhandled event %d", event); break;
+
+    case ARDUINO_EVENT_ETH_START: LOG_INF("Ethernet started, speed %uMHz", ETH.linkSpeed()); break;
+    case ARDUINO_EVENT_ETH_CONNECTED: LOG_INF("Ethernet connected, MAC: %s", ETH.macAddress().c_str()); break;
+    case ARDUINO_EVENT_ETH_STOP: LOG_INF("Ethernet Stopped"); break;
+    case ARDUINO_EVENT_ETH_GOT_IP: {
+      LOG_INF("Ethernet IP, use '%s://%s' to connect", useHttps ? "https" : "http", ETH.localIP().toString().c_str()); 
+      if (netMode == 2) WiFi.AP.enableNAPT(true);
+      break;
+    }
+    case ARDUINO_EVENT_ETH_DISCONNECTED: {
+      LOG_INF("Ethernet disconnected");
+      if (netMode == 2) WiFi.AP.enableNAPT(false);
+      break;
+    }
+    case ARDUINO_EVENT_ETH_LOST_IP: {
+      LOG_INF("Ethernet lost IP");
+      if (netMode == 2) WiFi.AP.enableNAPT(false);
+      break;
+    }
+    default: LOG_WRN("Unhandled network event %d", event); break;
   }
 }
 
 static void setWifiAP() {
   if (!APstarted) {
+    WiFi.AP.begin();
     // Set access point with static ip if provided
     if (strlen(AP_ip) > 1) {
       LOG_INF("Set AP static IP :%s, %s, %s", AP_ip, AP_gw, AP_sn);  
-      IPAddress _ip, _gw, _sn, _ns1 ,_ns2;
+      IPAddress _ip, _gw, _sn, _ns1, _ns2;
       _ip.fromString(AP_ip);
       _gw.fromString(AP_gw);
       _sn.fromString(AP_sn);
       // set static ip
-      WiFi.softAPConfig(_ip, _gw, _sn);
+      WiFi.AP.config(_ip, _gw, _sn);
     } 
-    WiFi.softAP(AP_SSID, AP_Pass);
+    WiFi.AP.create(AP_SSID, AP_Pass);
     debugMemory("setWifiAP");
   }
 }
@@ -173,71 +211,201 @@ static void setWifiSTA() {
       _ns1.fromString(ST_ns1);
       _ns2.fromString(ST_ns2);
       // set static ip
-      WiFi.config(_ip, _gw, _sn, _ns1); // need DNS for SNTP
+      WiFi.STA.config(_ip, _gw, _sn, _ns1); // need DNS for SNTP
       LOG_INF("Wifi Station set static IP");
     } 
   } else LOG_INF("Wifi Station IP from DHCP");
-  WiFi.enableIPv6(USE_IP6); 
-  WiFi.begin(ST_SSID, ST_Pass);
+  WiFi.STA.enableIPv6(USE_IP6); 
+  WiFi.STA.begin();
+  WiFi.STA.connect(ST_SSID, ST_Pass);
   debugMemory("setWifiSTA");
 }
 
-bool startWifi(bool firstcall) {
+static void predefEthPins() {
+  // set board specific pins if defined
+#if defined(ETH_CS)
+  char ethPin[3];
+  sprintf(ethPin, "%d", ETH_CS);
+  updateStatus("ethCS", ethPin);
+  sprintf(ethPin, "%d", ETH_INT);
+  updateStatus("ethInt", ethPin);
+  sprintf(ethPin, "%d", ETH_RST);
+  updateStatus("ethRst", ethPin);
+  sprintf(ethPin, "%d", ETH_SCLK);
+  updateStatus("ethSclk", ethPin);
+  sprintf(ethPin, "%d", ETH_MISO);
+  updateStatus("ethMiso", ethPin);
+  sprintf(ethPin, "%d", ETH_MOSI);
+  updateStatus("ethMosi", ethPin);
+#endif
+}
+
+static bool startEth() {
+  // Initialize Ethernet (W5500) via SPI, only viable on ESP32-S3 board
+  // Internal on ESP32-S3-ETH board, or use separate external board
+  if (ethCS != -1) {
+    ETH.end();
+#if CONFIG_IDF_TARGET_ESP32S3
+    if (!ETH.begin(ETH_PHY_W5500,
+                   ETH_PHY_ADDR_AUTO,
+                   ethCS,
+                   ethInt,
+                   ethRst,
+                   SPI2_HOST,
+                   ethSclk,
+                   ethMiso,
+                   ethMosi,
+                   ETH_PHY_SPI_FREQ_MHZ)) { 
+      LOG_WRN("Ethernet W5500 init failed");
+      return false;
+    }
+#endif
+#if CONFIG_IDF_TARGET_ESP32
+ #ifdef ISCAM
+    LOG_WRN("Insufficient pins for Ethernet on ESP32");
+    netMode = 0;
+    return false;
+ #else
+    // RMII uses predefined pins 19, 21, 22, 25, 26, 27
+    if (!ETH.begin(ETH_PHY_LAN8720,
+                   ETH_PHY_ADDR,
+                   ethCS,  // LAN8720 MDC 
+                   ethInt, // LAN8720 MDIO
+                   ethRst, // LAN8720 POWER
+                   ETH_CLK_MODE)) { 
+      LOG_WRN("Ethernet LAN8720 init failed");
+      return false;
+    }
+ #endif
+#endif
+
+    // Apply static IP to Ethernet if configured in existing fields
+    if (strlen(ST_ip) > 1) {
+      IPAddress _ip, _gw, _sn, _ns1, _ns2;
+      if (_ip.fromString(ST_ip)) {
+        _gw.fromString(ST_gw);
+        _sn.fromString(ST_sn);
+        _ns1.fromString(ST_ns1);
+        _ns2.fromString(ST_ns2);
+        ETH.config(_ip, _gw, _sn, _ns1, _ns2);
+        LOG_INF("Ethernet set static IP");
+      } else LOG_WRN("Failed to parse Ethernet static IP: %s", ST_ip);
+    }
+  } else {
+    LOG_WRN("Ethernet pins not defined");
+    return false;
+  }
+
+  // wait for link and DHCP or static assignment
+  uint32_t startAttemptTime = millis();
+  while (!ETH.linkUp() && millis() - startAttemptTime < 8000) delay(100);
+  if (!ETH.linkUp()) LOG_WRN("Ethernet link not up");
+  startAttemptTime = millis();
+  while (!ETH.localIP() && millis() - startAttemptTime < 8000) delay(100);
+  if (!ETH.localIP()) LOG_WRN("Ethernet no IP yet");
+  setupMdnsHost();
+  if (pingHandle == NULL) startPing();
+  return ETH.linkUp();
+}
+
+static bool startWifi(bool firstcall = true) {
   // start wifi station (and wifi AP if allowed or station not defined)
   if (firstcall) {
     WiFi.mode(WIFI_AP_STA);
     WiFi.persistent(false); // prevent the flash storage WiFi credentials
-    WiFi.setAutoReconnect(false); // Set whether module will attempt to reconnect to an access point in case it is disconnected
-    WiFi.softAPdisconnect(true); // kill rogue AP on startup
-    WiFi.setHostname(hostName);
+    WiFi.STA.setAutoReconnect(false); // Set whether module will attempt to reconnect to an access point in case it is disconnected
+    WiFi.AP.clear();
+    WiFi.AP.end(); // kill rogue AP on startup
+    WiFi.STA.setHostname(hostName);
     delay(100);
-    WiFi.onEvent(onWiFiEvent);
   }
-  setWifiSTA();
-  // connect to Wifi station
-  uint32_t startAttemptTime = millis();
-  // Stop trying on failure timeout, will try to reconnect later by ping
+  
   wl_status_t wlStat = WL_NO_SSID_AVAIL;
-  if (strlen(ST_SSID)) {
-    while (wlStat = WiFi.status(), wlStat != WL_CONNECTED && millis() - startAttemptTime < 5000)  {
-      logPrint(".");
-      delay(500);
+  if (netMode == 0) {
+    // connect to Wifi station
+    setWifiSTA();
+    uint32_t startAttemptTime = millis();
+    // Stop trying on failure timeout, will try to reconnect later by ping
+    wlStat = WL_NO_SSID_AVAIL;
+    if (strlen(ST_SSID)) {
+      while (wlStat = WiFi.STA.status(), wlStat != WL_CONNECTED && millis() - startAttemptTime < 5000)  {
+        logPrint(".");
+        delay(500);
+      }
     }
+    // show stats of requested SSID
+    int numNetworks = WiFi.scanNetworks();
+    for (int i=0; i < numNetworks; i++) {
+      if (!strcmp(WiFi.SSID(i).c_str(), ST_SSID))
+        LOG_INF("Wifi stats for %s - signal strength: %d dBm; Encryption: %s; channel: %u",  ST_SSID, WiFi.RSSI(i), getEncType(i), WiFi.channel(i));
+    }
+    if (wlStat != WL_CONNECTED) LOG_WRN("SSID %s not connected %s", ST_SSID, wifiStatusStr(wlStat));
   }
+  
   if (wlStat == WL_NO_SSID_AVAIL || allowAP) setWifiAP(); // AP allowed if no Station SSID eg on first time use 
-  if (wlStat != WL_CONNECTED) LOG_WRN("SSID %s not connected %s", ST_SSID, wifiStatusStr(wlStat));
 #if CONFIG_IDF_TARGET_ESP32S3
-  setupMdnsHost(); // not on ESP32 as uses 6k of heap
+  if (netMode == 0) setupMdnsHost(); // not on ESP32 as uses 6k of heap
 #endif
-  // show stats of requested SSID
-  int numNetworks = WiFi.scanNetworks();
-  for (int i=0; i < numNetworks; i++) {
-    if (!strcmp(WiFi.SSID(i).c_str(), ST_SSID))
-      LOG_INF("Wifi stats for %s - signal strength: %d dBm; Encryption: %s; channel: %u",  ST_SSID, WiFi.RSSI(i), getEncType(i), WiFi.channel(i));
-  }
   if (pingHandle == NULL) startPing();
   return wlStat == WL_CONNECTED ? true : false;
 }
 
-void resetWatchDog() {
-  // use ping task as watchdog in case of freeze
-  static bool watchDogStarted = false;
-  if (watchDogStarted) esp_task_wdt_reset();
+bool startNetwork(bool firstcall) {
+  // start WiFi, Ethernet, Eth+AP by config
+  Network.onEvent(onNetEvent);
+  predefEthPins();
+  if (netMode > 0) {
+    // Ethernet or Eth+AP
+    if (startEth()) {
+      if (netMode == 1) {
+        // Quiet mode: stop WiFi/BLE radios for RF silence
+        WiFi.mode(WIFI_OFF);
+#ifdef APP_BT_ENABLED
+        if (btStarted()) btStop();
+#endif
+        return true;
+      }
+    } else {
+      LOG_WRN("Ethernet start failed, falling back to WiFi");
+      ETH.end();
+      WiFi.AP.enableNAPT(false);
+      netMode = 0;
+    }
+  }
+  // Wifi only / Eth fail / Eth + AP
+  if (netMode == 2) {
+    WiFi.AP.enableNAPT(true);
+    allowAP = true;
+  }
+  return startWifi(firstcall);
+}
+
+IPAddress netLocalIP() { return (netMode > 0) ? ETH.localIP() : WiFi.STA.localIP(); }
+IPAddress netGatewayIP() { return (netMode > 0) ? ETH.gatewayIP() : WiFi.STA.gatewayIP(); }
+String netMacAddress() { return (netMode > 0) ? ETH.macAddress().c_str() : WiFi.STA.macAddress().c_str(); }
+int netRSSI() { return (netMode == 1) ? 0 : WiFi.STA.RSSI(); }
+bool netIsConnected() { return (netMode > 0) ? (ETH.linkUp() && ETH.localIP()) : (WiFi.STA.status() == WL_CONNECTED); }
+
+void resetWatchDog(int wdIndex, uint32_t wdTimeout) {
+  // customised watchdogs for particular tasks
+  // ping task (0) used as watchdog in case of esp freeze
+  static bool watchDogStarted[4] = {false, false, false, false};
+  if (watchDogStarted[wdIndex]) esp_task_wdt_reset();
   else {
     // setup watchdog on first call
     esp_task_wdt_deinit(); 
     esp_task_wdt_config_t twdt_config = {
-      .timeout_ms = (wifiTimeoutSecs * 1000 * 2),
+      .timeout_ms = wdTimeout,
       .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
       .trigger_panic = true, // panic abort on watchdog alert (contains wdt_isr)
     };
     esp_task_wdt_init(&twdt_config);
     esp_task_wdt_add(NULL);
     if (esp_task_wdt_status(NULL) == ESP_OK) {
-      watchDogStarted = true;
+      watchDogStarted[wdIndex] = true;
       esp_task_wdt_reset();
-      LOG_INF("WatchDog started using task: %s", pcTaskGetName(NULL));
-    } else LOG_ERR("WatchDog failed to start");
+      LOG_INF("WatchDog started for task: %s", pcTaskGetName(NULL));
+    } else LOG_ERR("WatchDog failed to start for task: %s ", pcTaskGetName(NULL));
   }
 }
 
@@ -267,7 +435,7 @@ static void pingSuccess(esp_ping_handle_t hdl, void *args) {
       else LOG_INF("Task ping stack space reduced to: %u", freeStack);
     }
   }
-  resetWatchDog();
+  resetWatchDog(0, wifiTimeoutSecs * 1000 * 2);
   if (dataFilesChecked) resetCrashLoop();
   statusCheck();
 }
@@ -276,18 +444,31 @@ static void pingTimeout(esp_ping_handle_t hdl, void *args) {
   // a ping check is used because esp may maintain a connection to gateway which may be unuseable, which is detected by ping failure
   // but some routers may not respond to ping - https://github.com/s60sc/ESP32-CAM_MJPEG2SD/issues/221
   // so setting usePing to false ignores ping failure if connection still present
-  resetWatchDog();
-  if (strlen(ST_SSID)) {
-    wl_status_t wStat = WiFi.status();
-    if (wStat != WL_NO_SSID_AVAIL && wStat != WL_NO_SHIELD) {
-      if (usePing) {
-        LOG_WRN("Failed to ping gateway, restart wifi ...");
-        startWifi(false);
-      } else {
-        if (wStat == WL_CONNECTED) statusCheck(); // treat as ok
-        else {
-          LOG_WRN("Disconnected, restart wifi ...");
+  resetWatchDog(0, wifiTimeoutSecs * 1000 * 2);
+  if (netMode > 0) {
+    if (usePing) {
+      LOG_WRN("Failed to ping gateway, restart ethernet ...");
+      startNetwork(false);
+    } else {
+      if (netIsConnected()) statusCheck();
+      else {
+        LOG_WRN("Disconnected, restart ethernet ...");
+        startNetwork(false);
+      }
+    }
+  } else {
+    if (strlen(ST_SSID)) {
+      wl_status_t wStat = WiFi.STA.status();
+      if (wStat != WL_NO_SSID_AVAIL && wStat != WL_NO_SHIELD) {
+        if (usePing) {
+          LOG_WRN("Failed to ping gateway, restart wifi ...");
           startWifi(false);
+        } else {
+          if (wStat == WL_CONNECTED) statusCheck();
+          else {
+            LOG_WRN("Disconnected, restart wifi ...");
+            startWifi(false);
+          }
         }
       }
     }
@@ -295,7 +476,8 @@ static void pingTimeout(esp_ping_handle_t hdl, void *args) {
 }
 
 static void startPing() {
-  IPAddress ipAddr = WiFi.gatewayIP();
+  IPAddress ipAddr = netGatewayIP();
+  if (!ipAddr) return; // don't start ping until gateway is known
   ip_addr_t pingDest; 
   IP_ADDR4(&pingDest, ipAddr[0], ipAddr[1], ipAddr[2], ipAddr[3]);
   esp_ping_config_t pingConfig = ESP_PING_DEFAULT_CONFIG();
@@ -525,12 +707,12 @@ bool changeExtension(char* fileName, const char* newExt) {
 }
 
 void showProgress(const char* marker) {
-  // show progess as dots 
+  // show progess as dots or supplied marker
   static uint8_t dotCnt = 0;
   logPrint(marker); // progress marker
   if (++dotCnt >= DOT_MAX) {
     dotCnt = 0;
-    logLine();
+    logPrint("\n");
   }
 }
 
@@ -636,37 +818,26 @@ char* fmtSize (uint64_t sizeVal) {
   return returnStr;
 }
 
-
-void doRestart(const char* restartStr) {
-  LOG_ALT("Controlled restart: %s", restartStr);
-#ifdef ISCAM
-  appShutdown();
-#endif
-#if INCLUDE_MQTT
-  if (mqtt_active) stopMqttClient();
-#endif  
-  resetCrashLoop();
-  flush_log(true);
-  delay(2000);
-  ESP.restart();
+char* trim(char* str) {
+  // trim whitespace around string
+    char* start = str;
+    char* end;
+    // Trim leading whitespace
+    while (*start && isspace((unsigned char)*start)) start++;
+    if (*start == '\0') {
+        *str = '\0';
+        return str;
+    }
+    // Trim trailing whitespace
+    end = start + strlen(start) - 1;
+    while (end > start && isspace((unsigned char)*end)) end--;
+    *(end + 1) = '\0';
+    // Shift string back to original buffer if needed
+    if (start != str) memmove(str, start, end - start + 2);
+    return str;
 }
 
-static void boardInfo() {
-  LOG_INF("Chip %s, %d cores @ %dMhz, rev %d", ESP.getChipModel(), ESP.getChipCores(), ESP.getCpuFreqMHz(), ESP.getChipRevision() / 100);
-  FlashMode_t ideMode = ESP.getFlashChipMode();
-  LOG_INF("Flash %s, mode %s @ %dMhz", fmtSize(ESP.getFlashChipSize()), (ideMode == FM_QIO ? "QIO" : ideMode == FM_QOUT ? "QOUT" : ideMode == FM_DIO ? "DIO" : ideMode == FM_DOUT ? "DOUT" : "UNKNOWN"), ESP.getFlashChipSpeed() / OneMHz);
-
-#if defined(CONFIG_SPIRAM_MODE_OCT)
-  const char* psramMode = "OPI";
-#else 
-  const char* psramMode = "QSPI";
-#endif
-  char memInfo[100] = "none";
-#if !CONFIG_IDF_TARGET_ESP32C3
-  if (psramFound()) sprintf(memInfo, "%s, mode %s @ %dMhz", fmtSize(ESP.getPsramSize()), psramMode, CONFIG_SPIRAM_SPEED);
-#endif
-  LOG_INF("PSRAM %s", memInfo);
-}
+/********************** analog functions ************************/
 
 uint16_t smoothAnalog(int analogPin, int samples) {
   // get averaged analog pin value 
@@ -719,6 +890,7 @@ float readInternalTemp() {
 #endif
   return intTemp;
 }
+
 /*********************** Remote loggging ***********************/
 /*
  * Log mode selection in user interface: 
@@ -732,24 +904,27 @@ float readInternalTemp() {
 static va_list arglist;
 static char fmtBuf[MAX_OUT];
 static char outBuf[MAX_OUT];
-char alertMsg[MAX_OUT];
 TaskHandle_t logHandle = NULL;
 static SemaphoreHandle_t logSemaphore = NULL;
 static SemaphoreHandle_t logMutex = NULL;
 static int logWait = 100; // ms
 bool useLogColors = false;  // true to colorise log messages (eg if using idf.py, but not arduino)
-bool wsLog = false;
 
 #define WRITE_CACHE_CYCLE 5
 
 bool sdLog = false; // log to SD
-int logType = 0; // which log contents to display (0 : ram, 1 : sd, 2 : ws)
+int logType = 0; // which log contents to display (0 : ram, 1 : sd)
 static FILE* log_remote_fp = NULL;
 static uint32_t counter_write = 0;
 
 // RAM memory based logging in RTC slow memory (cannot init)
 RTC_NOINIT_ATTR char messageLog[RAM_LOG_LEN];
 RTC_NOINIT_ATTR uint16_t mlogEnd;
+static RTC_NOINIT_ATTR uint32_t backtrace[60]; // backtrace addresses array
+static RTC_NOINIT_ATTR size_t btLen;
+static RTC_NOINIT_ATTR char btReason[50];
+static RTC_NOINIT_ATTR int btCore;
+static RTC_NOINIT_ATTR uint32_t haveTrace;
 
 static void ramLogClear() {
   mlogEnd = 0;
@@ -797,12 +972,12 @@ static void remote_log_init_SD() {
 
 void reset_log() {
   if (logType == 0) ramLogClear();
-  if (logType == 2) {
+  if (logType == 1) {
     if (log_remote_fp != NULL) flush_log(true); // Close log file
     STORAGE.remove(LOG_FILE_PATH);
     remote_log_init_SD();
   }
-  if (logType != 1) LOG_INF("Cleared %s log file", logType == 0 ? "RAM" : "SD"); 
+  LOG_INF("Cleared %s log file", logType == 0 ? "RAM" : "SD"); 
 }
 
 void remote_log_init() {
@@ -833,30 +1008,30 @@ void logPrint(const char *format, ...) {
     xTaskNotifyGive(logHandle);
     outBuf[MAX_OUT - 2] = '\n'; 
     outBuf[MAX_OUT - 1] = 0; // ensure always have ending newline
-    xSemaphoreTake(logSemaphore, portMAX_DELAY); // wait for logTask to complete        
-    // output to monitor console if attached
+    xSemaphoreTake(logSemaphore, portMAX_DELAY); // wait for logTask to complete
+
+    // output message to various recipients
     size_t msgLen = strlen(outBuf);
-    if (outBuf[msgLen - 2] == '~') {
-      // set up alert message for browser
-      outBuf[msgLen - 2] = ' ';
-      strncpy(alertMsg, outBuf, MAX_OUT - 1);
-      alertMsg[msgLen - 2] = 0;
-    }
-    ramLogStore(msgLen); // store in rtc ram 
-    if (monitorOpen) Serial.print(outBuf); 
-    else delay(10); // allow time for other tasks
-    if (sdLog) {
-      if (log_remote_fp != NULL) {
-        // output to SD if file opened
-        fwrite(outBuf, sizeof(char), msgLen, log_remote_fp); // log.txt
-        // periodic sync to SD
-        if (counter_write++ % WRITE_CACHE_CYCLE == 0) fsync(fileno(log_remote_fp));
-      } 
-    }
-    // output to web socket if open
     if (msgLen > 1) {
-      outBuf[msgLen - 1] = 0; // lose final '/n'
-      if (wsLog) wsAsyncSendText(outBuf);
+#ifdef AUXILIARY
+      sendSSE("log", outBuf);
+#else
+      wsAsyncSendText(outBuf); // output to browser over web socket
+#endif
+      if (outBuf[msgLen - 2] == '~') outBuf[msgLen - 2] = ' '; // remove '~' if present
+    }
+    if (monitorOpen) Serial.print(outBuf); // output to monitor console if attached
+    else delay(10); // allow time for other tasks
+    if (msgLen > 1) {
+      ramLogStore(msgLen); // store in rtc ram 
+      if (sdLog) {
+        if (log_remote_fp != NULL) {
+          // output to SD if file opened
+          fwrite(outBuf, sizeof(char), msgLen, log_remote_fp); // log.txt
+          // periodic sync to SD
+          if (counter_write++ % WRITE_CACHE_CYCLE == 0) fsync(fileno(log_remote_fp));
+        } 
+      }
     }
     xSemaphoreGive(logMutex);
   } 
@@ -866,31 +1041,44 @@ void logLine() {
   logPrint(" \n");
 }
 
+int vprintfRedirect(const char* format, va_list args) {
+  // format esp_log() output for logPrint()
+  char buffer[256];
+  int len = vsnprintf(buffer, sizeof(buffer), format, args);
+  logPrint("%s", buffer);
+  return len;
+}
+
 void logSetup() {
   // prep logging environment
-  Serial.begin(115200);
-  Serial.setDebugOutput(DBG_ON);
-  printf("\n\n");
-  if (DEBUG_MEM) printf("init > Free: heap %lu\n", ESP.getFreeHeap()); 
-  if (!DBG_ON) esp_log_level_set("*", ESP_LOG_NONE); // suppress ESP_LOG_ERROR messages
-  if (crashLoop == MAGIC_NUM) snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Crash loop detected, check log %s", (brownoutStatus == 'B' || brownoutStatus == 'R') ? "(brownout)" : " ");
-  crashLoop = MAGIC_NUM;
-  logSemaphore = xSemaphoreCreateBinary(); // flag that log message formatted
-  logMutex = xSemaphoreCreateMutex(); // control access to log formatter
-  xSemaphoreGive(logSemaphore);
-  xSemaphoreGive(logMutex);
-  xTaskCreate(logTask, "logTask", LOG_STACK_SIZE, NULL, LOG_PRI, &logHandle);
-  if (mlogEnd >= RAM_LOG_LEN) ramLogClear(); // init
-  LOG_INF("Setup RAM based log, size %u, starting from %u\n\n", RAM_LOG_LEN, mlogEnd);
-  LOG_INF("=============== %s %s ===============", APP_NAME, APP_VER);
-  initBrownout();
-  prepInternalTemp();
-  boardInfo();
-  LOG_INF("Compiled with arduino-esp32 v%s", ESP_ARDUINO_VERSION_STR);
-  wakeupResetReason();
-  if (alertBuffer == NULL) alertBuffer = psramFound() ? (byte*)ps_malloc(maxAlertBuffSize) : (byte*)malloc(maxAlertBuffSize); 
-  if (jsonBuff == NULL) jsonBuff = psramFound() ? (char*)ps_malloc(JSON_BUFF_LEN) : (char*)malloc(JSON_BUFF_LEN); 
-  debugMemory("logSetup");
+  if (logMutex == NULL) {
+    HEAP_MEM = psramFound() ? MALLOC_CAP_SPIRAM : MALLOC_CAP_DMA;
+    set_arduino_panic_handler(appPanicHandler, NULL);
+    Serial.begin(115200);
+    Serial.setDebugOutput(DBG_ON);
+    printf("\n\n");
+    if (DEBUG_MEM) printf("init > Free: heap %lu\n", ESP.getFreeHeap()); 
+    (DBG_ON) ? esp_log_level_set("*", DBG_LVL) : esp_log_level_set("*", ESP_LOG_NONE); // suppress esp log m+essages
+    esp_log_set_vprintf(vprintfRedirect); // redirect esp_log output to app log
+    if (crashLoop == MAGIC_NUM) snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Crash loop detected, check log %s", (brownoutStatus == 'B' || brownoutStatus == 'R') ? "(brownout)" : " ");
+    crashLoop = MAGIC_NUM;
+    logSemaphore = xSemaphoreCreateBinary(); // flag that log message formatted
+    logMutex = xSemaphoreCreateMutex(); // control access to log formatter
+    xSemaphoreGive(logSemaphore);
+    xSemaphoreGive(logMutex);
+    xTaskCreateWithCaps(logTask, "logTask", LOG_STACK_SIZE, NULL, LOG_PRI, &logHandle, HEAP_MEM);
+    if (mlogEnd >= RAM_LOG_LEN) ramLogClear(); // init
+    logPrint("\n\n=============== %s %s ===============\n", APP_NAME, APP_VER);
+    LOG_INF("Setup RAM based log, size %u, starting from %u", RAM_LOG_LEN, mlogEnd);
+    initBrownout();
+    prepInternalTemp();
+    boardInfo();
+    LOG_INF("Compiled with arduino-esp32 v%s", ESP_ARDUINO_VERSION_STR);
+    wakeupResetReason();
+     if (jsonBuff == NULL) jsonBuff = psramFound() ? (char*)ps_malloc(JSON_BUFF_LEN) : (char*)malloc(JSON_BUFF_LEN); 
+    if (!DBG_ON) esp_log_level_set("*", ESP_LOG_ERROR); // show ESP_LOG_ERROR messages during init
+    debugMemory("logSetup");
+  }
 }
 
 void formatHex(const char* inData, size_t inLen) {
@@ -903,17 +1091,10 @@ void formatHex(const char* inData, size_t inLen) {
 
 const char* espErrMsg(esp_err_t errCode) {
   // convert esp error code to text
+  // https://github.com/espressif/esp-idf/blob/master/components/esp_common/include/esp_err.h
   static char errText[100];
   esp_err_to_name_r(errCode, errText, 100);
   return errText;
-}
-
-void forceCrash() {
-  // force crash for testing purposes
-  delay(5000);
-#pragma GCC diagnostic ignored "-Wdiv-by-zero"
-  printf("%u\n", 1/0);
-#pragma GCC diagnostic warning "-Wdiv-by-zero"
 }
 
 /****************** base 64 ******************/
@@ -972,13 +1153,14 @@ static void statsTask(void *arg) {
   #define STATS_INTERVAL      30000 // ms
   #define ARRAY_SIZE_OFFSET   40   // Increase this if ESP_ERR_INVALID_SIZE
 
+  bool onceOnly = *(bool*)arg; 
   static configRUN_TIME_COUNTER_TYPE prevRunCounter = 0;
   esp_err_t ret = ESP_OK;  
   TaskStatus_t *statsArray = NULL;
   UBaseType_t statsArraySize;
   configRUN_TIME_COUNTER_TYPE runCounter;
-      
-  while (true) {
+  
+  do {
     delay(STATS_INTERVAL);
 
     do { // fake loop for breaks
@@ -1003,30 +1185,32 @@ static void statsTask(void *arg) {
         break;
       }
 
-      printf("\nTask stats interval %lums on %u cores\n", (runCounter - prevRunCounter) / 1000, CONFIG_FREERTOS_NUMBER_OF_CORES);
-      printf("\n| %-16s | %-10s | %-3s | %-4s | %-6s |\n", "Task name", "State", "Pri", "Core", "Core%");
-      printf("|------------------|------------|-----|------|--------|\n"); 
+      logPrint("\nTask stats interval %lums on %u cores\n", (runCounter - prevRunCounter) / 1000, CONFIG_FREERTOS_NUMBER_OF_CORES);
+      logPrint("\n| %-16s | %-10s | %-3s | %-4s | %-6s |\n", "Task name", "State", "Pri", "Core", "Core%");
+      logPrint("|------------------|------------|-----|------|--------|\n"); 
       // Match each task in start_array to those in the end_array
       for (int i = 0; i < statsArraySize; i++) {
         float percentage_time = ((float)statsArray[i].ulRunTimeCounter * 100.0) / runCounter;
-        printf("| %-16s | %-10s | %*u | %*s | %*.1f%% |\n", 
+        logPrint("| %-16s | %-10s | %*u | %*s | %*.1f%% |\n", 
           statsArray[i].pcTaskName, getTaskStateString(statsArray[i].eCurrentState), 3, (int)statsArray[i].uxCurrentPriority, 4, "tbd", 5, percentage_time);
       }
-      printf("|------------------|------------|-----|------|--------|\n"); 
+      logPrint("|------------------|------------|-----|------|--------|\n"); 
     } while (false);
 
     prevRunCounter = runCounter;
     free(statsArray);
     if (ret != ESP_OK) LOG_WRN("Failed to start task monitoring %s", espErrMsg(ret));
-  }
+  } while (!onceOnly);
+  vTaskDelete(NULL);
 }
 
-void runTaskStats() {
+void runTaskStats(bool _onceOnly) {
   // invoke task stats monitoring
+  static bool onceOnly = _onceOnly;
   // Allow other core to finish initialization
   vTaskDelay(pdMS_TO_TICKS(100));
   // Create and start stats task
-  xTaskCreatePinnedToCore(statsTask, "statsTask", 4096, NULL, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
+  xTaskCreatePinnedToCore(statsTask, "statsTask", 4096, &onceOnly, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
 }
 #endif
 
@@ -1034,10 +1218,7 @@ void checkMemory(const char* source) {
   LOG_INF("%s Free: heap %u, block: %u, min: %u, pSRAM %u", strlen(source) ? source : "Setup", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getMinFreeHeap(), ESP.getFreePsram());
   if (ESP.getFreeHeap() < WARN_HEAP) LOG_WRN("Free heap only %u, min %u", ESP.getFreeHeap(), ESP.getMinFreeHeap());
   if (ESP.getMaxAllocHeap() < WARN_ALLOC) LOG_WRN("Max allocatable heap block is only %u", ESP.getMaxAllocHeap());
-  if (!strlen(source) && DEBUG_MEM) {
-    printGpioInfo();
-    runTaskStats();
-  }
+  if (!strlen(source) && DEBUG_MEM) runTaskStats();
 }
 
 uint32_t checkStackUse(TaskHandle_t thisTask, int taskIdx) {
@@ -1067,40 +1248,24 @@ void debugMemory(const char* caller) {
   }
 }
 
-#include "esp32-hal-periman.h"
-static void printGpioInfo() {
-  // from https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/chip-debug-report.cpp
-  printf("Assigned GPIO Info:\n");
-  for (uint8_t i = 0; i < SOC_GPIO_PIN_COUNT; i++) {
-    if (!perimanPinIsValid(i)) continue;  //invalid pin
-    peripheral_bus_type_t type = perimanGetPinBusType(i);
-    if (type == ESP32_BUS_TYPE_INIT) continue;  //unused pin
-
-#if defined(BOARD_HAS_PIN_REMAP)
-    int dpin = gpioNumberToDigitalPin(i);
-    if (dpin < 0) continue;  //pin is not exported
-    else printf("  D%-3d|%4u : ", dpin, i);
-#else
-    printf("  %4u : ", i);
-#endif
-    const char *extra_type = perimanGetPinBusExtraType(i);
-    if (extra_type) printf("%s", extra_type);
-    else printf("%s", perimanGetTypeName(type));
-    int8_t bus_number = perimanGetPinBusNum(i);
-    if (bus_number != -1) printf("[%u]", bus_number);
-
-    int8_t bus_channel = perimanGetPinBusChannel(i);
-    if (bus_channel != -1) printf("[%u]", bus_channel);
-    printf("\n");
-  }
-  printf("\n");
-}
-
-
-/****************** send device to sleep (light or deep) & watchdog ******************/
+/****************** send device to sleep (light or deep), watchdog, panics ******************/
 
 #include <esp_wifi.h>
 #include <driver/gpio.h>
+
+void doRestart(const char* restartStr) {
+  LOG_ALT("Controlled restart: %s", restartStr);
+#ifdef ISCAM
+  appShutdown();
+#endif
+#if INCLUDE_MQTT
+  if (mqtt_active) stopMqttClient();
+#endif  
+  resetCrashLoop();
+  flush_log(true);
+  delay(2000);
+  ESP.restart();
+}
 
 static esp_sleep_wakeup_cause_t printWakeupReason() {
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
@@ -1117,6 +1282,32 @@ static esp_sleep_wakeup_cause_t printWakeupReason() {
   return wakeup_reason;
 }
 
+void appPanicHandler(arduino_panic_info_t *info, void *arg) {
+  // store crash backtrace and delay reboot to avoid thrashing
+  // https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/esp32-hal-misc.c
+  strncpy(btReason, info->reason, sizeof(btReason) - 1);
+  btCore = info->core;
+  btLen = info->backtrace_len;
+  for (int i = 0; i < info->backtrace_len; i++) backtrace[i] = info->backtrace[i];
+  haveTrace = MAGIC_NUM; // flag that backtrace available
+  esp_rom_delay_us(PANIC_DELAY * 1000 * 1000);
+}
+
+static void showBacktrace() {
+  // display backtrace following a panic
+  if (haveTrace == MAGIC_NUM) {
+    haveTrace = 0;
+    char bt[220];
+    sprintf(bt, "%s on core %d", btReason, btCore);
+    LOG_WRN("%s", bt);
+    bt[0] = 0;
+    for (int i = 0; i < btLen; i++) { 
+      snprintf(bt + strlen(bt), sizeof(bt) - strlen(bt) - 11, "0x%08x ", (unsigned int)backtrace[i]); // 11 is size of new trace hex
+    }
+    LOG_WRN("Paste backtrace below into Arduino Exception Decoder:\n");
+    logPrint("Backtrace: %s\n\n", bt);
+  }
+}
 
 static esp_reset_reason_t printResetReason() {
   esp_reset_reason_t bootReason = esp_reset_reason();
@@ -1139,6 +1330,7 @@ static esp_reset_reason_t printResetReason() {
     case ESP_RST_SDIO: LOG_INF("Reset over SDIO"); break;
     default: LOG_WRN("Unhandled reset reason"); break;
   }
+  showBacktrace();
   return bootReason;
 }
 
@@ -1148,24 +1340,25 @@ esp_sleep_wakeup_cause_t wakeupResetReason() {
   return wakeupReason;
 }
 
-void goToSleep(int wakeupPin, bool deepSleep) {
+void goToSleep(bool deepSleep) {
 #if !CONFIG_IDF_TARGET_ESP32C3
   // if deep sleep, restarts with reset
   // if light sleep, restarts by continuing this function
   LOG_INF("Going into %s sleep", deepSleep ? "deep" : "light");
   delay(100);
   if (deepSleep) { 
-    if (wakeupPin >= 0) {
-      // wakeup on pin low
-      pinMode(wakeupPin, INPUT_PULLUP);
-      esp_sleep_enable_ext0_wakeup((gpio_num_t)wakeupPin, 0);
+    if (wakePin >= 0) {
+      // wakeup on pin low (0) or high (1)
+      // needs to be RTC pin and support input pullup/down
+      pinMode(wakePin, wakeLevel == 0 ? INPUT_PULLUP : INPUT_PULLDOWN);
+      esp_sleep_enable_ext0_wakeup((gpio_num_t)wakePin, wakeLevel);
     }
     esp_deep_sleep_start();
   } else {
     // light sleep
     esp_wifi_stop();
-    // wakeup on pin high
-    if (wakeupPin >= 0) gpio_wakeup_enable((gpio_num_t)wakeupPin, GPIO_INTR_HIGH_LEVEL); 
+    // wakeup on selected pin
+    if (wakePin >= 0) gpio_wakeup_enable((gpio_num_t)wakePin, wakeLevel == 0 ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL); 
     esp_light_sleep_start();
   }
   // light sleep restarts here
@@ -1175,7 +1368,6 @@ void goToSleep(int wakeupPin, bool deepSleep) {
   LOG_WRN("This function not compatible with ESP32-C3");
 #endif
 }
-
 
 // catch software resets due to brownouts
 //https://github.com/espressif/esp-idf/blob/master/components/esp_system/port/brownout.c
@@ -1216,4 +1408,142 @@ static void initBrownout(void) {
     brownout_ll_intr_enable(true);
     brownoutStatus = 0; 
   }
+}
+
+void forceCrash() {
+  // force crash for testing purposes
+  delay(5000);
+#pragma GCC diagnostic ignored "-Wdiv-by-zero"
+  printf("%u\n", 1/0);
+#pragma GCC diagnostic warning "-Wdiv-by-zero"
+}
+
+/************************ board info **************************/
+
+static void boardInfo() {
+  LOG_INF("Chip %s, %d cores @ %dMhz, rev %d", ESP.getChipModel(), ESP.getChipCores(), ESP.getCpuFreqMHz(), ESP.getChipRevision() / 100);
+  FlashMode_t ideMode = ESP.getFlashChipMode();
+  LOG_INF("Flash %s, mode %s @ %dMhz", fmtSize(ESP.getFlashChipSize()), (ideMode == FM_QIO ? "QIO" : ideMode == FM_QOUT ? "QOUT" : ideMode == FM_DIO ? "DIO" : ideMode == FM_DOUT ? "DOUT" : "UNKNOWN"), ESP.getFlashChipSpeed() / OneMHz);
+
+#if defined(CONFIG_SPIRAM_MODE_OCT)
+  const char* psramMode = "OPI";
+#else 
+  const char* psramMode = "QSPI";
+#endif
+  char memInfo[100] = "none";
+#if !CONFIG_IDF_TARGET_ESP32C3
+  if (psramFound()) sprintf(memInfo, "%s, mode %s @ %dMhz", fmtSize(ESP.getPsramSize()), psramMode, CONFIG_SPIRAM_SPEED);
+#endif
+  LOG_INF("PSRAM %s", memInfo);
+}
+
+#include "esp32-hal-periman.h"
+static void printGpioInfo() {
+  // from https://github.com/espressif/arduino-esp32/blob/master/cores/esp32/chip-debug-report.cpp
+  logPrint("Assigned GPIO Info:\n");
+  for (uint8_t i = 0; i < SOC_GPIO_PIN_COUNT; i++) {
+    if (!perimanPinIsValid(i)) continue;  //invalid pin
+    peripheral_bus_type_t type = perimanGetPinBusType(i);
+    if (type == ESP32_BUS_TYPE_INIT) continue;  //unused pin
+
+    char gpioInf[100];
+    char* p = gpioInf;
+#if defined(BOARD_HAS_PIN_REMAP)
+    int dpin = gpioNumberToDigitalPin(i);
+    if (dpin < 0) continue;  //pin is not exported
+    else p+= sprintf(p, "  D%-3d|%4u : ", dpin, i);
+#else
+    p+= sprintf(p, "  %4u : ", i);
+#endif
+    const char *extra_type = perimanGetPinBusExtraType(i);
+    if (extra_type) p+= sprintf(p, "%s", extra_type);
+    else p+= sprintf(p, "%s", perimanGetTypeName(type));
+    int8_t bus_number = perimanGetPinBusNum(i);
+    if (bus_number != -1) p+= sprintf(p, "[%u]", bus_number);
+
+    int8_t bus_channel = perimanGetPinBusChannel(i);
+    if (bus_channel != -1) p+= sprintf(p, "[%u]", bus_channel);
+    *p = 0;
+    logPrint("%s\n", gpioInf);
+  }
+}
+
+// display partition map
+const char* partitionTypeToStr(uint8_t type) {
+  // Map type to string
+  switch (type) {
+    case ESP_PARTITION_TYPE_APP: return "APP";
+    case ESP_PARTITION_TYPE_DATA: return "DATA";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* partitionSubtypeToStr(uint8_t type, uint8_t subtype) {
+  // Map subtype to string based on type
+  if (type == ESP_PARTITION_TYPE_APP) {
+    switch (subtype) {
+      case ESP_PARTITION_SUBTYPE_APP_FACTORY: return "Factory";
+      case ESP_PARTITION_SUBTYPE_APP_OTA_0: return "OTA_0";
+      case ESP_PARTITION_SUBTYPE_APP_OTA_1: return "OTA_1";
+      case ESP_PARTITION_SUBTYPE_APP_OTA_2: return "OTA_2";
+      case ESP_PARTITION_SUBTYPE_APP_OTA_3: return "OTA_3";
+      case ESP_PARTITION_SUBTYPE_APP_OTA_4: return "OTA_4";
+      case ESP_PARTITION_SUBTYPE_APP_OTA_5: return "OTA_5";
+      default: return "App_Other";
+    }
+  } else if (type == ESP_PARTITION_TYPE_DATA) {
+    switch (subtype) {
+      case ESP_PARTITION_SUBTYPE_DATA_OTA: return "OTA_Data";
+      case ESP_PARTITION_SUBTYPE_DATA_PHY: return "PHY";
+      case ESP_PARTITION_SUBTYPE_DATA_NVS: return "NVS";
+      case ESP_PARTITION_SUBTYPE_DATA_NVS_KEYS: return "NVS_Keys";
+      case ESP_PARTITION_SUBTYPE_DATA_SPIFFS: return "SPIFFS";
+      case ESP_PARTITION_SUBTYPE_DATA_FAT: return "FAT";
+      default: return "Data_Other";
+    }
+  }
+  return "Unknown";
+}
+
+static void printPartitionTable() {
+  // print all partitions
+  logPrint("%-12s %-6s %-12s %-10s %-12s %-10s", "Partition", "Type", "Subtype", "Address", "Size", "Encrypted\n");
+  logPrint("-----------------------------------------------------------------\n");
+
+  // Get iterator for all partitions
+  esp_partition_iterator_t iter = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL);
+
+  if (iter == NULL) {
+    LOG_ERR("No partitions found");
+    return;
+  }
+
+  // Iterate through all partitions
+  do {
+    const esp_partition_t* part = esp_partition_get(iter);
+    const char* typeStr = partitionTypeToStr(part->type);
+    const char* subtypeStr = partitionSubtypeToStr(part->type, part->subtype);
+    const char* label = part->label;
+    logPrint("%-12s %-6s %-12s 0x%08lX %-12s %-10s\n",
+      label, typeStr, subtypeStr, part->address, fmtSize(part->size), part->encrypted ? "Yes" : "No");
+    iter = esp_partition_next(iter);
+  } while (iter != NULL);
+
+  // Free iterator
+  esp_partition_iterator_release(iter);
+}
+
+void showSys() {
+  // output system details to web log
+  logLine();
+  boardInfo();
+  logPrint("\n%s v%s, arduino-esp32 v%s\n", APP_NAME, APP_VER, ESP_ARDUINO_VERSION_STR);
+  logLine();
+  printPartitionTable();
+  logLine();
+  printGpioInfo();
+  logLine();
+  runTaskStats(true);
+  logLine();
+  //gpio_dump_io_configuration(stdout, SOC_GPIO_VALID_GPIO_MASK);
 }

@@ -8,17 +8,18 @@
 
 char inFileName[IN_FILE_NAME_LEN];
 static char variable[FILE_NAME_LEN]; 
-static char value[FILE_NAME_LEN]; 
+static char value[IN_FILE_NAME_LEN]; 
 static char retainAction[2];
 int refreshVal = 5000; // msecs
 
-static httpd_handle_t httpServer = NULL; // web server port 
+static httpd_handle_t httpServer = NULL; // web server port
 static int fdWs = -1; // websocket sockfd
+static httpd_handle_t sseSocketHD; // SSE support
+static int sseSocketFD;
 bool useHttps = false;
 bool useSecure = false;
 bool heartBeatDone = false;
 
-static fs::FS fp = STORAGE;
 static byte* chunk;
 
 esp_err_t sendChunks(File df, httpd_req_t *req, bool endChunking) {   
@@ -34,11 +35,7 @@ esp_err_t sendChunks(File df, httpd_req_t *req, bool endChunking) {
     df.close();
     httpd_resp_sendstr_chunk(req, NULL);
   }
-  if (res != ESP_OK) {
-    snprintf(startupFailure, SF_LEN, "Failed to send to browser: %s, err %s", inFileName, espErrMsg(res));
-    LOG_WRN("%s", startupFailure);
-    OTAprereq(); // free up memory
-  } 
+  if (res != ESP_OK) LOG_WRN("Failed to send to browser: %s, err %s", inFileName, espErrMsg(res));
   return res;
 }
 
@@ -46,7 +43,7 @@ esp_err_t fileHandler(httpd_req_t* req, bool download) {
   // send file contents to browser
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   if (!strcmp(inFileName, LOG_FILE_PATH)) flush_log(false);
-  File df = fp.open(inFileName);
+  File df = STORAGE.open(inFileName);
   if (!df) {
     LOG_WRN("File does not exist or cannot be opened: %s", inFileName);
     httpd_resp_send_404(req);
@@ -110,15 +107,15 @@ static esp_err_t indexHandler(httpd_req_t* req) {
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   // first check if a startup failure needs to be reported
   if (strlen(startupFailure)) {
-    httpd_resp_set_type(req, "text/html");                   
+    httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req, failPageS_html);
     httpd_resp_sendstr_chunk(req, startupFailure);
     httpd_resp_sendstr_chunk(req, failPageE_html);
     httpd_resp_sendstr_chunk(req, NULL);
     return ESP_OK;
   } 
-  // Show wifi wizard if not setup, using access point mode  
-  if (!fp.exists(INDEX_PAGE_PATH) && WiFi.status() != WL_CONNECTED) {
+  // Show wifi wizard if not setup, using access point mode
+  if (!STORAGE.exists(INDEX_PAGE_PATH) && WiFi.status() != WL_CONNECTED) {
     // Open a basic wifi setup page
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
@@ -207,7 +204,7 @@ static esp_err_t controlHandler(httpd_req_t *req) {
     strcpy(value, variable + strlen(variable) + 1); // value points to second part of string
     if (!strcmp(variable, "reset")) {
       httpd_resp_sendstr(req, NULL); // stop browser resending reset
-      doRestart("User requested restart"); 
+      doRestart(value); 
       return ESP_OK;
     }
     if (!strcmp(variable, "startOTA")) snprintf(inFileName, IN_FILE_NAME_LEN - 1, "%s/%s", DATA_DIR, value); 
@@ -255,6 +252,34 @@ bool parseJson(int rxSize) {
     } else updateStatus(variable, value);
   } while (ptr + itemLen - jsonBuff < rxSize);
   return retAction;
+}
+
+static esp_err_t sseHandler(httpd_req_t *req) {
+  // enable Server Sent Events
+  const char* sseHeader = "HTTP/1.1 200 OK\r\n"
+                          "Cache-Control: no-store\r\n"
+                          "Connection: keep-alive\r\n"
+                          "Content-Type: text/event-stream\r\n\r\n";
+  sseSocketHD = req->handle;
+  sseSocketFD = httpd_req_to_sockfd(req);
+  httpd_socket_send(sseSocketHD, sseSocketFD, sseHeader, strlen(sseHeader), 0); 
+  sendSSE("open", "opened");
+  return ESP_OK;
+}
+
+#define SSESEP "\r\n\r\n" // SSE event separator
+void sendSSE(const char* eventType, const char* eventData) {
+  // send event data to browser
+  if (sseSocketFD > 0) {
+    char eventMsg[30];
+    snprintf(eventMsg, 30 - 1, "event: %s\ndata: ", eventType);
+    int res = httpd_socket_send(sseSocketHD, sseSocketFD, eventMsg, strlen(eventMsg), 0);
+    res = httpd_socket_send(sseSocketHD, sseSocketFD, eventData, strlen(eventData), 0);
+    res = httpd_socket_send(sseSocketHD, sseSocketFD, SSESEP, strlen(SSESEP), 0);
+    if (res == HTTPD_SOCK_ERR_TIMEOUT) LOG_WRN("Timeout/interrupted while using socket");
+    if (res == HTTPD_SOCK_ERR_FAIL) LOG_WRN("Unrecoverable error while using socket");
+    if (res == HTTPD_SOCK_ERR_INVALID) LOG_WRN("Invalid arguments %s, %s", eventType, eventData);
+  } else LOG_ERR("SSE not initiated");
 }
 
 static esp_err_t updateHandler(httpd_req_t *req) {
@@ -324,7 +349,7 @@ esp_err_t uploadHandler(httpd_req_t *req) {
 
   } else {
     // create / replace data file on storage
-    File uf = fp.open(inFileName, FILE_WRITE);
+    File uf = STORAGE.open(inFileName, FILE_WRITE);
     if (!uf) LOG_WRN("Failed to open %s on storage", inFileName);
     else {
       // obtain file content
@@ -353,7 +378,7 @@ esp_err_t uploadHandler(httpd_req_t *req) {
 
 static esp_err_t setupHandler(httpd_req_t *req) {
   // Scan for WiFi networks
-  int w = WiFi.scanNetworks();
+  int w = (netMode == 0) ? WiFi.scanNetworks() : 0;
   // Start building the JSON string
   char* p = jsonBuff;
   p += sprintf(p, "{\"networks\":[");
@@ -417,6 +442,13 @@ bool wsAsyncSendText(const char* wsData) {
   return false;
 }
 
+bool wsAsyncSendJson(const char* dataType, const char* wsData) {
+  // build json to send
+  char wsJson[strlen(dataType) + strlen(wsData) + 30];
+  sprintf(wsJson, "{\"type\":\"%s\",\"payload\":{%s}}", dataType, wsData);
+  return wsAsyncSendText(wsJson);
+}
+
 void wsAsyncSendBinary(uint8_t* data, size_t len) {
   // websockets send binary function, used for app specific features
   if (fdWs >= 0) {
@@ -445,7 +477,7 @@ static esp_err_t wsHandler(httpd_req_t *req) {
     if (fdWs != -1) {
       if (fdWs != httpd_req_to_sockfd(req)) {
         // websocket connection from browser when another browser connection is active
-        LOG_WRN("closing connection, as newer Websocket on %u", httpd_req_to_sockfd(req));
+        LOG_VRB("closing connection, as newer Websocket on %u", httpd_req_to_sockfd(req));
         // kill older connection
         killSocket();
       }
@@ -454,7 +486,7 @@ static esp_err_t wsHandler(httpd_req_t *req) {
     if (fdWs < 0) {
       LOG_WRN("failed to get socket number");
       ret = ESP_FAIL;
-    } else LOG_INF("Websocket connection: %d", fdWs);
+    } else LOG_VRB("Websocket connection: %d", fdWs);
   } else {
     // data content received
     httpd_ws_frame_t wsPkt;
@@ -499,29 +531,23 @@ static esp_err_t customOrNotFoundHandler(httpd_req_t *req, httpd_err_code_t err)
   return ESP_FAIL;
 }
 
-void startWebServer() {
+bool startWebServer() {
   esp_err_t res = ESP_FAIL;
-  chunk = psramFound() ? (byte*)ps_malloc(CHUNKSIZE) : (byte*)malloc(CHUNKSIZE); 
+  chunk = psramFound() ? (byte*)ps_malloc(CHUNKSIZE) : (byte*)malloc(CHUNKSIZE);
 #if INCLUDE_CERTS
-  size_t prvtkey_len = strlen(prvtkey_pem);
-  size_t cacert_len = strlen(cacert_pem);
-  if (useHttps && (!cacert_len || !prvtkey_len)) {
-    useHttps = false;
-    LOG_ALT("HTTPS not available as server keys not defined, using HTTP");
-  }
   if (useHttps) {
     // HTTPS server
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
 #if CONFIG_IDF_TARGET_ESP32S3
     config.httpd.stack_size = SERVER_STACK_SIZE;
 #endif  
-    config.cacert_pem = (const uint8_t*)cacert_pem;
-    config.cacert_len = cacert_len + 1;
-    config.prvtkey_pem = (const uint8_t*)prvtkey_pem;
-    config.prvtkey_len = prvtkey_len + 1;
+    config.prvtkey_pem = (const uint8_t*)serverCerts[0];
+    config.prvtkey_len = strlen(serverCerts[0]) + 1;
+    config.servercert = (const uint8_t*)serverCerts[1];
+    config.servercert_len = strlen(serverCerts[1]) + 1;
+  
     //config.user_cb = https_server_user_callback;
     config.httpd.server_port = HTTPS_PORT;
-    config.httpd.ctrl_port = HTTPS_PORT;
     config.httpd.lru_purge_enable = true; // close least used socket 
     config.httpd.max_uri_handlers = MAX_HANDLERS;
     config.httpd.max_open_sockets = HTTP_CLIENTS + MAX_STREAMS;
@@ -529,34 +555,33 @@ void startWebServer() {
     //config.httpd.uri_match_fn = httpd_uri_match_wildcard;
     res = httpd_ssl_start(&httpServer, &config);
   } else {
+#else
+  if (!useHttps) {
 #endif
     // HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 #if CONFIG_IDF_TARGET_ESP32S3
     config.stack_size = SERVER_STACK_SIZE;
-#endif  
+#endif
     config.server_port = HTTP_PORT;
-    config.ctrl_port = HTTP_PORT;
-    config.lru_purge_enable = true;   
+    config.lru_purge_enable = true;
     config.max_uri_handlers = MAX_HANDLERS;
     config.max_open_sockets = HTTP_CLIENTS + MAX_STREAMS;
     config.task_priority = HTTP_PRI;
     //config.uri_match_fn = httpd_uri_match_wildcard;
     res = httpd_start(&httpServer, &config);
-#if INCLUDE_CERTS
   }
-#endif
-
   httpd_uri_t indexUri = {.uri = "/", .method = HTTP_GET, .handler = indexHandler, .user_ctx = NULL};
   httpd_uri_t webUri = {.uri = "/web", .method = HTTP_GET, .handler = webHandler, .user_ctx = NULL};
   httpd_uri_t controlUri = {.uri = "/control", .method = HTTP_GET, .handler = controlHandler, .user_ctx = NULL};
   httpd_uri_t updateUri = {.uri = "/update", .method = HTTP_POST, .handler = updateHandler, .user_ctx = NULL};
   httpd_uri_t statusUri = {.uri = "/status", .method = HTTP_GET, .handler = statusHandler, .user_ctx = NULL};
-  httpd_uri_t wsUri = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = NULL, .is_websocket = true};
   httpd_uri_t uploadUri = {.uri = "/upload", .method = HTTP_POST, .handler = uploadHandler, .user_ctx = NULL};
+  httpd_uri_t wifiUri = {.uri = "/wifi", .method = HTTP_GET, .handler = setupHandler, .user_ctx = NULL};
+  httpd_uri_t sseUri = {.uri = "/sse", .method = HTTP_GET, .handler = sseHandler, .user_ctx = NULL};
+  httpd_uri_t wsUri = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = NULL, .is_websocket = true};
   httpd_uri_t sustainUri = {.uri = "/sustain", .method = HTTP_GET, .handler = appSpecificSustainHandler, .user_ctx = NULL};
   httpd_uri_t checkUri = {.uri = "/sustain", .method = HTTP_HEAD, .handler = appSpecificSustainHandler, .user_ctx = NULL};
-  httpd_uri_t wifiUri = {.uri = "/wifi", .method = HTTP_GET, .handler = setupHandler, .user_ctx = NULL};
 
   if (res == ESP_OK) {
     httpd_register_uri_handler(httpServer, &indexUri);
@@ -564,11 +589,12 @@ void startWebServer() {
     httpd_register_uri_handler(httpServer, &controlUri);
     httpd_register_uri_handler(httpServer, &updateUri);
     httpd_register_uri_handler(httpServer, &statusUri);
-    httpd_register_uri_handler(httpServer, &wsUri);
     httpd_register_uri_handler(httpServer, &uploadUri);
+    httpd_register_uri_handler(httpServer, &sseUri);
+    httpd_register_uri_handler(httpServer, &wifiUri);
+    httpd_register_uri_handler(httpServer, &wsUri);
     httpd_register_uri_handler(httpServer, &sustainUri);
     httpd_register_uri_handler(httpServer, &checkUri);
-    httpd_register_uri_handler(httpServer, &wifiUri);
     httpd_register_err_handler(httpServer, HTTPD_404_NOT_FOUND, customOrNotFoundHandler);
 
     LOG_INF("Starting web server on port: %u", useHttps ? HTTPS_PORT : HTTP_PORT);
@@ -577,6 +603,12 @@ void startWebServer() {
       uint32_t freeStack = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
       LOG_INF("Task httpServer stack space %u", freeStack);
     }
-  } else LOG_WRN("Failed to start web server");
+  } else snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Failed to start webserver %s",espErrMsg(res));
+  if (!DBG_ON) esp_log_level_set("*", ESP_LOG_NONE); // suppress ESP_LOG_ERROR messages
   debugMemory("startWebserver");
+  if (strlen(startupFailure)) {
+    LOG_WRN("%s", startupFailure);
+    return false;
+  }
+  return true;
 }
