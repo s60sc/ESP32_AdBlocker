@@ -1,5 +1,5 @@
 
-        // s60sc 2023, 2024
+        // s60sc 2023, 2024, 2025
         // with ideas from @rjsachse
 
         /*********** initialisation  ***********/
@@ -21,7 +21,6 @@
         let updateData = {}; // receives json for status data as key val pairs
         let statusData = {}; // stores all status data as key val pairs
         let cfgGroupNow = -1;
-        let loggingOn = false;
         const CLASS = 0;
         const ID = 1;
         const $ = document.querySelector.bind(document);
@@ -31,8 +30,9 @@
         const bigThumbSize = parseFloat(root.getPropertyValue('--bigThumbSize')) * baseFontSize;
         const smallThumbSize = parseFloat(root.getPropertyValue('--smallThumbSize')) * baseFontSize;
         let isImmed = false;
-        let logType = appLogInit;
         let pageVisible = true;
+        let logType = 0;
+        let isBuilt = false; // for one off build of Main tab
 
         async function initialise() {
           try {
@@ -42,61 +42,92 @@
             if (doCustomInit) customInit();
             setListeners();
             doLoadStatus ? loadStatus("") : configStatus(false); 
+            startEventSource();
+            initWebSocket(0);
             if (doRefreshTimer && refreshTimer == null) refreshStatus();
-            if (doInitWebSocket) initWebSocket(0);
           } catch (error) {
             showLog("Initialise -  " + error.message);
             alert("Initialise - " + error.message);
           } 
         }
 
-        /*********** websocket functions ***********/
-
-        // define websocket handling
-        function initWebSocket(index) {
-          if (wsSkt[index] == null && wsServers[index] != null) {
-            wsSkt[index] = new WebSocket(wsServers[index]);
-            wsSkt[index].binaryType = "arraybuffer";
-            wsSkt[index].onopen = function(event) {
-              // connect to websocket server
-              showLog("Connect to " + wsServers[index]);
-              if (index == 0 && doCustomSync) customSync();
-              if (doHeartbeat && !hbTimer) heartbeat();
-            }
-            wsSkt[index].onmessage = onMessage;
-            wsSkt[index].onerror = function(error) {
-              showLog("WS Error: " + error.reason);
-            }
-            wsSkt[index].onclose = async function(event) {
-              await sleep(200);
-              showLog("Disconnected " + wsServers[index] + " : " + event.code + ' - ' + event.reason);
-              loggingOn = false;
-              wsSkt[index] = null;
-              // event.codes:
-              //   1006 if server not available, or another web page is already open
-              //   1005 if closed from app
-              if (pageVisible) setTimeout(initWebSocket(index), 100); 
+        /*********** websocket and SSE functions ***********/
+        
+        function applyMessageData(msgData) {
+          if (msgData instanceof ArrayBuffer) processBuffer(msgData); // app specific
+          else if (typeof msgData === 'string') {
+            let data = msgData.trim();
+            if (data.startsWith("{")) {
+              // json data
+              try {
+                const { type, payload } = JSON.parse(data);
+                handlers[type] ? handlers[type](payload) : console.warn("No WS handler for", type);
+              } catch (err) {
+                console.error("Invalid WS JSON:", data, err);
+              }
+            } else if (data.startsWith("#")) customWsMsg(data);
+            else {
+              if (data.endsWith("\n")) data = data.slice(0, -1); // remove newline
+              if (data.endsWith("~")) {
+                data = data.slice(0, -1); // remove alert msg indicator
+                showAlert(data);
+              }
+              showLog(data, false);
             }
           }
-          return wsSkt[index] ? true : false;
         }
 
-        // process received WS message
-        function onMessage(messageEvent) {
-          if (messageEvent.data instanceof ArrayBuffer) processBuffer(messageEvent.data); // app specific
-          else if (typeof messageEvent.data === 'string') {
-            if (messageEvent.data.startsWith("{")) {
-              // json data
-              updateData = JSON.parse(messageEvent.data);
+        // JSON handlers
+        const handlers = {
+          update: (payload) => {
+              updateData = payload;
               let filter = updateData.cfgGroup;
               delete updateData.cfgGroup;
               if (filter == "-1") updateStatus(); // status update
               else buildTable(updateData, filter); // format received config json into html table
-            } else if (messageEvent.data.startsWith("#")) customWsMsg(messageEvent.data);
-            else showLog(messageEvent.data, false);
+          },
+          ustatus: (payload) => {
+            updateData = payload;
+            updateStatus();
+          }
+        };
+
+
+        // define websocket handling
+        function initWebSocket(index) {
+          if (doInitWebSocket) {
+            if (wsSkt[index] == null && wsServers[index] != null) {
+              wsSkt[index] = new WebSocket(wsServers[index]);
+              wsSkt[index].binaryType = "arraybuffer";
+              wsSkt[index].onopen = function(event) {
+                // connect to websocket server
+                showLog("Connect to " + wsServers[index] + " on " + index);
+                if (index == 0 && doCustomSync) customSync();
+                if (doHeartbeat && !hbTimer) heartbeat();
+              }
+              wsSkt[index].onmessage = onMessage;
+              wsSkt[index].onerror = function(error) {
+                showLog("WS Error: " + error.reason);
+              }
+              wsSkt[index].onclose = async function(event) {
+                await sleep(200);
+                showLog("Disconnected " + wsServers[index] + " on " + index + " : " + event.code + ' - ' + event.reason);
+                wsSkt[index] = null;
+                // event.codes:
+                //   1006 if server not available, or another web page is already open
+                //   1005 if closed from app
+                if (pageVisible) setTimeout(initWebSocket(index), 100); 
+              }
+            }
+            return wsSkt[index] ? true : false;
           }
         }
-        
+
+        // process received WS message
+        function onMessage(messageEvent) {
+          applyMessageData(messageEvent.data);
+        }
+
         const waitForOpenWs = (socket) => {
           return new Promise((resolve, reject) => {
             const maxNumberOfAttempts = 10;
@@ -136,6 +167,35 @@
               if (wsSkt[index] && wsSkt[index].readyState === WebSocket.OPEN) sendWsMsg('H', index);
             });
           }, heartbeatInterval);
+        }
+        
+        // handle Server Sent Events
+        function startEventSource() {
+          if (doInitSSE) {
+            // Create a new EventSource instance, pointing to the server's endpoint
+            console.log("sse "+webServer+'/sse');
+            const eventSource = new EventSource(webServer+'/sse');
+
+            // Listen for the 'open' event when the connection is established
+            eventSource.addEventListener('open', function(event) {
+              console.log('SSE connection opened.');
+            });
+
+            // Listen for unspecified events from the server (no 'event' string)
+            eventSource.addEventListener('message', (event) => {
+              console.log("No event specified: " + event.data);
+            });
+
+            eventSource.addEventListener('log', (event) => {
+              // update log
+              applyMessageData(event.data);
+            });
+            
+            // unhandled events
+            eventSource.onerror = (err) => {
+              console.error("SSE error:", err);
+            }
+          }
         }
 
         /*********** page layout functions ***********/
@@ -259,15 +319,16 @@
             const eld = $('div#'+key); // display text
             const eli = $('#'+key); // input field
             if (elt) elt.textContent = value; 
-            else if (eld) {if (eld.classList.contains('displayonly')) eld.innerHTML = value;} // display text 
-            else if (eli != null) { // input fields
+            else if (eld && eld.classList.contains('displayonly')) eld.innerHTML = value; // display text 
+            else if (eli && !eli.classList.contains('nochange')) { 
+              // input fields;
               if (eli.type === 'checkbox') eli.checked = !!Number(value);
               else if (eli.type === 'range') eli.setAttribute('value', value);
               else if (eli.type === 'option') eli.selected = true;
               else eli.value = value; 
-            }
+            } 
             const elth = $('td#'+key); 
-            if (elth != null) elth.innerHTML = value; // table data
+            if (elth) elth.innerHTML = value; // table data
             $$('input[name="' + key + '"]').forEach(el => {if (el.value == value) el.checked = true;}); // radio button group
             statusData[key] = value;
             processStatus(ID, key, value, false);
@@ -282,7 +343,7 @@
             const errorMessage = validateApPassword(apPassInput.value.trim());
             if (errorMessage) {
               showInputError(apPassInput, errorMessage);
-              showAlert('Cannot save settings: Invalid AP password.');
+              showAlert('Invalid AP password - ' + errorMessage);
               return;
             }
           } 
@@ -305,6 +366,7 @@
           const validAscii = /^[\x20-\x7E]*$/; // Printable ASCII characters only
           const strongPassword = /^(?=.*[A-Za-z])(?=.*\d).+$/; // At least one letter and one number
 
+          if (password.length == 0) return ''; // clear password
           if (password.length < minLength) {
             return 'Password must be at least 8 characters long.';
           }
@@ -416,7 +478,7 @@
           $('#alertText').innerHTML = "";
         }
 
-        async function saveChanges() {
+        async function saveChanges(resetMsg = "User requested restart") {
           // Validate AP_Pass before saving
           const apPassInput = $('#AP_Pass');
           if (apPassInput) {
@@ -431,7 +493,7 @@
           await sleep(100);
           sendControl('save', 1);
           await sleep(1000);
-          sendControl('reset', 1);
+          sendControl('reset', resetMsg);
         }
 
         function dbg(msg) {
@@ -448,7 +510,7 @@
         function clearLog() {
           if (window.confirm('This will delete all log entries. Are you sure ?')) { 
             $('#appLog').innerHTML = "";
-            if (logType != 1) sendControl("resetLog", "1");
+            sendControl("resetLog", "1");
           }
         }
 
@@ -456,29 +518,26 @@
           // request display of stored log file
           const log = $('#appLog');
           log.innerHTML = "";
-          loggingOn = (logType == 1) ? true : false; 
-          if (logType != 1) {
-            const requestURL = logType == 0 ? '/control?displayLog=1' : '/web?log.txt';
-            const response = await fetch(encodeURI(requestURL));
-            if (response.ok) {
-              const logData = await response.text();
-              let start = 0;
-              const loadNextLine = () => {
-                const index = logData.indexOf("\n", start);
-                if (index !== -1) {
-                  log.innerHTML += colorise(logData.substring(start, index)) + '<br>';
-                  start = index + 1;
-                  // auto scroll log as loaded
-                  const bottom = 2 * baseFontSize;// 2 lines
-                  const pos = Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop);
-                  if (pos < bottom) log.scrollTop = log.scrollHeight;
-                  // stop browser hanging while log is loaded
-                  setTimeout(loadNextLine, 1); 
-                } 
-              };
-              loadNextLine(); 
-            } else showAlert("getLog - " + response.status + ": " + response.statusText); 
-          }
+          const requestURL = logType == 0 ? '/control?displayLog=1' : '/web?log.txt';
+          const response = await fetch(encodeURI(requestURL));
+          if (response.ok) {
+            const logData = await response.text();
+            let start = 0;
+            const loadNextLine = () => {
+              const index = logData.indexOf("\n", start);
+              if (index !== -1) {
+                log.innerHTML += colorise(logData.substring(start, index)) + '<br>';
+                start = index + 1;
+                // auto scroll log as loaded
+                const bottom = 2 * baseFontSize;// 2 lines
+                const pos = Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop);
+                if (pos < bottom) log.scrollTop = log.scrollHeight;
+                // stop browser hanging while log is loaded
+                setTimeout(loadNextLine, 1); 
+              } 
+            };
+            loadNextLine(); 
+          } else showAlert("getLog - " + response.status + ": " + response.statusText); 
         }
 
         function checkTime(value) {
@@ -611,20 +670,17 @@
         }
 
         function showLog(reqStr, fromUser = true) {
-          if (loggingOn) {
-            const date = new Date();
-            // add timestamp to received text if generated by browser
-            let logText = fromUser ? "[" + date.toLocaleTimeString() + " Web] " : "";
-            logText += reqStr;
-            // append to log display 
-            const log = $('#appLog');
-            log.innerHTML += colorise(logText) + '<br>';
-            // auto scroll new entry unless scroll bar is not at bottom
-            const bottom = 2 * baseFontSize;// 2 lines
-            const pos = Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop);
-            if (pos < bottom) log.scrollTop = log.scrollHeight;
-          }
-          console.log("Info: " + reqStr);
+          const date = new Date();
+          // add timestamp to received text if generated by browser
+          let logText = fromUser ? "[" + date.toLocaleTimeString() + " Web] " : "";
+          logText += reqStr;
+          // append to log display 
+          const log = $('#appLog');
+          log.innerHTML += colorise(logText) + '<br>';
+          // auto scroll new entry unless scroll bar is not at bottom
+          const bottom = 2 * baseFontSize;// 2 lines
+          const pos = Math.abs(log.scrollHeight - log.clientHeight - log.scrollTop);
+          if (pos < bottom) log.scrollTop = log.scrollHeight;
         }
 
         function colorise(line) {
@@ -676,24 +732,30 @@
           const response = await fetch('/status?123456789' + cfgGroup);
           if (response.ok) {
             const configData = await response.json();
-            // format received json into html table
-            buildTable(configData, cfgGroup);
+            if (isDefined($('.config-group#Main'+cfgGroup)) && isBuilt) {
+              // apply to existing Main tab table
+              updateData = configData;
+              updateStatus(); 
+            }
+            else buildTable(configData, cfgGroup); // format received json into html table with data
           } else alert("getConfig - " + response.status + ": " + response.statusText); 
         }
 
         function buildTable(configData, cfgGroup) {
           // dynamically build table of editable settings
+          isBuilt = true; // Main tab only built once as content refreshed
           const divShowData = isDefined($('.config-group#Main'+cfgGroup)) ? $('.config-group#Main'+cfgGroup) : $('.config-group#Cfg');
-          const retain = divShowData.id == 'Main'+cfgGroup ? true : false; // retain main page
           divShowData.innerHTML = "";
-          if (cfgGroupNow != cfgGroup || retain) { // setup different config grouop
+          if (cfgGroupNow == cfgGroup) cfgGroupNow = -1; // toggle off existing config table
+          else { 
+            // setup different config table
             cfgGroupNow = cfgGroup;
             const table = document.createElement("table"); 
             // Create table header row from heading names
             const colHeaders = ['Setting Name', 'Setting Value']; 
             let tr = table.insertRow(-1); 
             for (let i = 0; i < colHeaders.length; i++) {
-              let th = document.createElement("th");    
+              let th = document.createElement("th");
               th.innerHTML = colHeaders[i];
               tr.appendChild(th);
             }
@@ -725,6 +787,9 @@
                     case 'T': // text input
                       inputHtml = '<input type="text" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" >';
                     break;
+                    case 'X': // text input field not updated by app
+                      inputHtml = '<input type="text" class="configItem nochange" id="' + saveKey + '" value="'+ saveVal +'" >';
+                    break;
                     case 'N': // number input
                       inputHtml = '<input type="number" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" >';
                     break;
@@ -745,7 +810,7 @@
                       inputHtml += '<label class="slider" for="' + saveKey + '"></label></div>';
                     break;
                     case 'D': // display only
-                      inputHtml = '<input type="text" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" readonly>';
+                      inputHtml = '<input type="text" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" readonly style="background-color: var(--menuBackground);">';
                     break;
                     case 'R': // R:min:max:step
                       // format number as range slider 
@@ -765,7 +830,7 @@
                       });
                     break;
                     case 'A': // action button
-                      inputHtml = '<input type="button" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" >';
+                      inputHtml = '<svg class="svgCols nochange"><rect class="buttonRect" tabindex="0"/><text id="' + saveKey + '" class="midText" text-anchor="middle" dominant-baseline="middle">' + saveVal + '</text></svg>';
                     break;
                     default:
                       alert("Unhandled config input type " + value);
@@ -778,7 +843,7 @@
             })
             // add the newly created table at placeholder
             divShowData.appendChild(table);
-          } else cfgGroupNow = -1;
+          }
         }
 
 
@@ -864,9 +929,8 @@
         // Add the entered IP to the array if not already present
         let newIP = ipInput.value.trim();
         if (newIP !== '' && !ipAddresses.some(item => item.includes(newIP))) {
-          // if only ip address, add app specific URI
-          // for any other app, enter full URL
-          if (newIP.indexOf('/') == -1) newIP += appHub;
+          // if only ip address supplied then add default URI, otherwise use supplied URL
+          if (newIP.indexOf('/') == -1) newIP += '/control?hub=${Date.now()';
           ipAddresses.push(newIP);
           localStorage.setItem('enteredIPs', JSON.stringify(ipAddresses));
           // Call the function to create image elements with the updated IP addresses
@@ -983,26 +1047,29 @@
         const audioWorkletScript = createMicAudioWorkletScript(sampleRateRatio);
         try {
           if (!audioContextMic || audioContextMic.state === 'closed') audioContextMic = new AudioContext({ sampleRate: inSampleRate });
-          micStream = await navigator.mediaDevices.getUserMedia({ audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true } });
-          const source = audioContextMic.createMediaStreamSource(micStream);
-          const delayNode = audioContextMic.createDelay();
-          delayNode.delayTime.value = 1; // 100ms delay
-          await audioContextMic.audioWorklet.addModule('data:text/javascript;base64,' + btoa(audioWorkletScript));
-          Resample = new AudioWorkletNode(audioContextMic, "resample");
-          source.connect(Resample).connect(delayNode).connect(audioContextMic.destination);
-          // send mic data to app
-          if (Resample) Resample.port.onmessage = function(event) {
-            // buffer data into 20ms chunks
-            const inputDataArray = new Int16Array(event.data);
-            audioBuffer.push(...inputDataArray);
-            if (audioBuffer.length >= sendSize) {
-              const bufferToSend = new Int16Array(audioBuffer.splice(0, sendSize));
-              // send audio, but drop if cant send else lag will occur
-              if (wsSkt[index] && wsSkt[index].readyState === WebSocket.OPEN) {
-                wsSkt[index].send(bufferToSend);
-                // display average microphone signal level
-                const sum = bufferToSend.reduce((accumulator, currentValue) => accumulator + Math.abs(currentValue), 0);
-                showMicLevel(sum / bufferToSend.length / 0x1000);
+          if (!audioContextSpkr.audioWorklet) alert('Mic: AudioWorklet not supported in this browser/environment');
+          else {
+            micStream = await navigator.mediaDevices.getUserMedia({ audio: { noiseSuppression: true, echoCancellation: true, autoGainControl: true } });
+            const source = audioContextMic.createMediaStreamSource(micStream);
+            const delayNode = audioContextMic.createDelay();
+            delayNode.delayTime.value = 1; // 100ms delay
+            await audioContextMic.audioWorklet.addModule('data:text/javascript;base64,' + btoa(audioWorkletScript));
+            Resample = new AudioWorkletNode(audioContextMic, "resample");
+            source.connect(Resample).connect(delayNode).connect(audioContextMic.destination);
+            // send mic data to app
+            if (Resample) Resample.port.onmessage = function(event) {
+              // buffer data into 20ms chunks
+              const inputDataArray = new Int16Array(event.data);
+              audioBuffer.push(...inputDataArray);
+              if (audioBuffer.length >= sendSize) {
+                const bufferToSend = new Int16Array(audioBuffer.splice(0, sendSize));
+                // send audio, but drop if cant send else lag will occur
+                if (wsSkt[index] && wsSkt[index].readyState === WebSocket.OPEN) {
+                  wsSkt[index].send(bufferToSend);
+                  // display average microphone signal level
+                  const sum = bufferToSend.reduce((accumulator, currentValue) => accumulator + Math.abs(currentValue), 0);
+                  showMicLevel(sum / bufferToSend.length / 0x1000);
+                }
               }
             }
           }
@@ -1083,10 +1150,13 @@
         // start browser speaker output
         if (!audioContextSpkr || audioContextSpkr.state === 'closed') audioContextSpkr = new AudioContext({ sampleRate: outSampleRate });
         const audioWorkletScript = createSpkrAudioWorkletScript();
-        await audioContextSpkr.audioWorklet.addModule('data:text/javascript;base64,' + btoa(audioWorkletScript));
-        pcmNode = new AudioWorkletNode(audioContextSpkr, 'pcmProcessor');
-        pcmNode.connect(audioContextSpkr.destination);
-        initWebSocket(index);
+        if (!audioContextSpkr.audioWorklet) alert('Speaker: AudioWorklet not supported in this browser/environment');
+        else {
+          await audioContextSpkr.audioWorklet.addModule('data:text/javascript;base64,' + btoa(audioWorkletScript));
+          pcmNode = new AudioWorkletNode(audioContextSpkr, 'pcmProcessor');
+          pcmNode.connect(audioContextSpkr.destination);
+          initWebSocket(index);
+        }
       }
 
       async function outputSpkr(audioData) {

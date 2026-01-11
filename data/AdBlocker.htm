@@ -13,18 +13,18 @@
     <style>
       :root {
         /* colors used on web pages - see https://www.w3schools.com/colors/colors_names.asp */
-        --buttonReady: silver;
-        --buttonActive: #A0A0A0; /* mid gray */
-        --buttonHover: #D0D0D0; /* light gray */
+        --buttonReady: LightGray;
+        --buttonActive: DarkGray;
+        --buttonHover: silver; 
         --buttonText: white;
         --buttonLabel: black;
-        --itemInactive: #E0E0E0; /* very light gray */
-        --menuBackground: silver;
+        --itemInactive: Gainsboro; /* very light gray */
+        --menuBackground: LightGray;
         --inputText: navy;
         --pageText: black; 
         --inputBackground: whiteSmoke; 
         --alertMsg: red;
-        --itemBorder: silver; 
+        --itemBorder: LightGray; 
         --pageBackground: white;
         
         /* logcolors */
@@ -54,7 +54,7 @@
       }
       
       .hidden {
-        display: none
+        display: none;
       }
       
       progress {
@@ -273,7 +273,7 @@
       } 
       
       input[type=number]::-webkit-inner-spin-button {
-        opacity: 1
+        opacity: 1;
       }
       
       input[type="button"]:focus {
@@ -324,6 +324,7 @@
         border:2px solid var(--itemBorder);
         overflow:auto;
         background: var(--inputBackground);
+        white-space: pre-wrap; /* preserves spaces, tabs, and newlines */
       }
       
       select {
@@ -409,17 +410,6 @@
     <div id="ShowLog" class="tabcontent">
       <br>
       <div class="grid-cols4">
-        <div class="input-group" style="grid-column: span 2">
-          <fieldset> 
-          <legend id="selectLog">Select Log</legend> 
-          <div>
-            <label title="Display RTC RAM log" for="rtcram">RTC RAM</label>
-            <input class="local" id="rtcram" type="radio" name="logType" value="0" checked>
-            <label title="Display Websocket log" for="websock">&nbsp;Websocket</label>
-            <input class="local" id="websock" type="radio" name="logType" value="1">
-          </div>
-          </fieldset>
-        </div>
         <div class="input-group" id="dbg-group" style="align-items: center; grid-column: span 2">
           <label for="dbgVerbose" class="header" title="Set verbose logging">Verbose:</label>
           <div class="switch">
@@ -427,6 +417,13 @@
             <label title="Outputs additional information to log" class="slider" for="dbgVerbose"></label>
           </div>
         </div>
+        <div>
+          <svg>
+            <rect class="buttonRect" tabindex="0"/>
+            <text id="showsys" class="midText">System</text>
+          </svg>
+        </div>
+        <br>
         <div style="grid-column: span 4"><br></div>
         <div>
           <svg>
@@ -488,16 +485,24 @@
           <div class="subheader">Press Save button to make changes permanent</div>
           <br>
         </div>
+      </div>
+      <div class="grid-cols4">
         <div>
           <svg class="svgCols">
             <rect class="buttonRect" tabindex="0"/>
-            <text id="wifi" class="midText">Wifi</text>
+            <text id="wifi" class="midText">Network</text>
           </svg>
         </div>
         <div>
           <svg class="svgCols">
             <rect class="buttonRect" tabindex="0"/>
             <text id="settings" class="midText">Settings</text>
+          </svg>
+        </div>
+        <div>
+          <svg class="svgCols">
+            <rect class="buttonRect" tabindex="0"/>
+            <text id="ethernet" class="midText">Ethernet</text>
           </svg>
         </div>
         <div>
@@ -521,9 +526,7 @@
 
       let refreshInterval = 5000;
       let appClock = Math.ceil(Date.now() / 1000);
-      const appLogInit = 0;
-      const appHub = '/control?svg=1';
-      
+
       function processStatus(dest, key, value, fromUser = true) {
         // process change to status value
         if (dest == ID) {
@@ -533,26 +536,29 @@
             document.title = value;
             if (fromUser) sendControl(key, value);
           }
-          else if (key == "alertMsg") showAlert(value);
           else if (key == "clearLog") clearLog();
           else if (key == "refreshLog") getLog();
-          else if (key == "logType") { logType = value; sendControl(key, value); return; }
           else if (key == "reset") saveChanges();
           else if (key == "refreshVal") refreshInterval = value * 1000; 
           else if (key == "clockUTC") { appClock = value; checkTime(value); }
           else if (key == "settings") getConfig("01");
-          else if (key == "fileURL") changeFileURL(key, value);
+          else if (key == "ethernet") getConfig("0123");
+          else if (key == "fileURLn") return;
+          else if (key == "xStop") { if (fromUser) sendControl(key, value); return; }
+          else if (key == "zLoad" || key == "uLoad" || key == "vLoad" || key == "wLoad") { if (fromUser) getLoadURL(key); return; }
           // remaining changes are passed thru to app
           else if (fromUser) sendControl(key, value); 
         }
         else if (dest == CLASS) {}
       }
-
-      function changeFileURL(key, value) {
-        sendControl(key, value);
-        saveChanges();
+      
+      function getLoadURL(key) {
+        // use value in new URL unless blank
+        if ($('#fileURLn').value.length) sendControl(key, $('#fileURLn').value);
+        else sendControl(key, $('#fileURLc').value);
       }
       
+
       function closedTab(isClosed) {}
 
       function configStatus(refresh) {
@@ -563,13 +569,15 @@
       
       // common script config
       const doCustomInit = false;
-      const doInitWebSocket = false;
+      const doInitWebSocket = true;
       const doLoadStatus = false;
       const doRefreshTimer = true;
       const doCustomSync = false;
       const doHeartbeat = false;
+      const doInitSSE = false;
 
-      const scriptFiles = ['/web?common.js', 'C:/MyStuff/Arduino/CommonMaster/Latest/common.js']; 
+
+      const scriptFiles = ['/web?common.js', '../../CommonMaster/Latest/common.js'];
       for (let i = 0; i < scriptFiles.length; i++) {
         const scriptElement = document.createElement('script');
         scriptElement.src = scriptFiles[i];
