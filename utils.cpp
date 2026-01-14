@@ -1052,7 +1052,7 @@ int vprintfRedirect(const char* format, va_list args) {
 void logSetup() {
   // prep logging environment
   if (logMutex == NULL) {
-    HEAP_MEM = psramFound() ? MALLOC_CAP_SPIRAM : MALLOC_CAP_DMA;
+    HEAP_MEM = MALLOC_CAP_DMA;
     set_arduino_panic_handler(appPanicHandler, NULL);
     Serial.begin(115200);
     Serial.setDebugOutput(DBG_ON);
@@ -1546,4 +1546,5 @@ void showSys() {
   runTaskStats(true);
   logLine();
   //gpio_dump_io_configuration(stdout, SOC_GPIO_VALID_GPIO_MASK);
+
 }
