@@ -10,7 +10,7 @@
 
 #pragma once
 
-#//define DEV_ONLY // leave commented out
+//#define DEV_ONLY // leave commented out
 #ifdef DEV_ONLY
 // to compile with -Wall -Werror=all -Wextra
 #pragma GCC diagnostic error "-Wformat=2"
@@ -430,3 +430,4 @@ enum RemoteFail {SETASSIST, GETEXTIP, TGRAMCONN, FSFTP, EMAILCONN, EXTERNALHB, B
 #define DBG_FORMAT(format) LOG_COLOR_DBG "[%s ### DEBUG @ %s:%u] " format LOG_NO_COLOR "\n", esp_log_system_timestamp(), pathToFileName(__FILE__), __LINE__
 #define LOG_DBG(format, ...) do { logPrint(DBG_FORMAT(format), ##__VA_ARGS__); delay(FLUSH_DELAY); } while (0)
 #define LOG_PRT(buff, bufflen) log_print_buf((const uint8_t*)buff, bufflen)
+
