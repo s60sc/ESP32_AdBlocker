@@ -50,7 +50,7 @@ static uint32_t binarySearch(const char* searchStr, bool doUpdate) {
 static size_t formatDomain(char* domName) {
   // format input domain name by removing whitespace, www. prefix and converting to lowercase
   trim(domName);
-  for (int i = 0; domName[i] != '\0'; i++) domName[i] = tolower((uint8_t)domName[i]);
+  toCase(domName);
   size_t domLen = strlen(domName);
   int wwwOffset = (strncmp(domName, "www.", 4) == 0) ? 4 : 0;  // remove any leading "www."
   memmove(domName, domName + wwwOffset,  domLen + 1 - wwwOffset);
@@ -467,7 +467,7 @@ AP_ip~~0~T~AP IP Address if not 192.168.4.1
 AP_sn~~0~T~AP subnet
 AP_gw~~0~T~AP gateway
 useHttps~0~0~C~Enable HTTPS connection to app
-allowAP~2~0~C~Allow simultaneous AP
+allowAP~2~1~C~Allow simultaneous AP
 timezone~GMT0~1~T~Timezone string: tinyurl.com/TZstring
 logType~0~99~N~Output log selection
 Auth_Name~~0~T~Optional user name for web page login

@@ -118,8 +118,7 @@ static esp_err_t indexHandler(httpd_req_t* req) {
   if (!STORAGE.exists(INDEX_PAGE_PATH) && WiFi.status() != WL_CONNECTED) {
     // Open a basic wifi setup page
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
-    return httpd_resp_send(req, (const char*)setupPage_html_gz, setupPage_html_gz_len);
+    return httpd_resp_sendstr(req, setupPage_html);
   } else if (!checkAuth(req)) return ESP_OK; // check if authentication required & passed
 
   return fileHandler(req);

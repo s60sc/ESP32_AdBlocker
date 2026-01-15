@@ -10,7 +10,9 @@
 
 #pragma once
 
-//#define DEV_ONLY // leave commented out
+#if __has_include("./devUtilities.cpp") 
+#define DEV_ONLY 
+#endif
 #ifdef DEV_ONLY
 // to compile with -Wall -Werror=all -Wextra
 #pragma GCC diagnostic error "-Wformat=2"
@@ -200,6 +202,7 @@ bool startStorage();
 bool startWebServer();
 void stopPing();
 void syncToBrowser(uint32_t browserUTC);
+char* toCase(char *s, bool toLower = true);
 char* trim(char* str);
 bool updateConfigVect(const char* variable, const char* value);
 void updateStatus(const char* variable, const char* _value, bool fromUser = true);
@@ -339,8 +342,7 @@ extern char messageLog[];
 extern uint16_t mlogEnd;
 extern bool timeSynchronized;
 extern bool monitorOpen; 
-extern const uint8_t setupPage_html_gz[];
-extern const size_t setupPage_html_gz_len;
+extern const char* setupPage_html;
 extern const char* otaPage_html;
 extern const char* failPageS_html;
 extern const char* failPageE_html;
@@ -430,4 +432,3 @@ enum RemoteFail {SETASSIST, GETEXTIP, TGRAMCONN, FSFTP, EMAILCONN, EXTERNALHB, B
 #define DBG_FORMAT(format) LOG_COLOR_DBG "[%s ### DEBUG @ %s:%u] " format LOG_NO_COLOR "\n", esp_log_system_timestamp(), pathToFileName(__FILE__), __LINE__
 #define LOG_DBG(format, ...) do { logPrint(DBG_FORMAT(format), ##__VA_ARGS__); delay(FLUSH_DELAY); } while (0)
 #define LOG_PRT(buff, bufflen) log_print_buf((const uint8_t*)buff, bufflen)
-
