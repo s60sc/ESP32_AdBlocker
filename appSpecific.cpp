@@ -467,7 +467,7 @@ AP_ip~~0~T~AP IP Address if not 192.168.4.1
 AP_sn~~0~T~AP subnet
 AP_gw~~0~T~AP gateway
 useHttps~0~0~C~Enable HTTPS connection to app
-allowAP~2~1~C~Allow simultaneous AP
+allowAP~2~0~C~Allow simultaneous AP
 timezone~GMT0~1~T~Timezone string: tinyurl.com/TZstring
 logType~0~99~N~Output log selection
 Auth_Name~~0~T~Optional user name for web page login
@@ -498,3 +498,4 @@ ethSclk~-1~3~N~Ethernet SPI clock pin
 ethMiso~-1~3~N~Ethernet SPI MISO pin
 ethMosi~-1~3~N~Ethernet SPI MOSI pin
 )~";
+
