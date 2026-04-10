@@ -14,13 +14,16 @@
                                             -> vars
                                             
   config field types:
-  - T : Text
-  - N : Number
-  - S : Select options S:lab1:lab2:etc
-  - C : Checkbox (as slider)
-  - D : Display only
-  - R : Range (as slider) R:min:max:step
+  - A : Action button
   - B : Radio Buttons B:lab1:lab2:etc
+  - C : Checkbox (as slider)
+  - D : Display only text
+  - L : Binary string input
+  - N : Number
+  - R : Range (as slider) R:min:max:step
+  - S : Select options S:lab1:lab2:etc
+  - T : Editable Text
+  - X : Text input field not updated by app
 
   s60sc 2022, 2024
 */
@@ -67,7 +70,7 @@ void reloadConfigs() {
 #endif
 }
 
-static int getKeyPos(std::string thisKey) {
+static int getKeyPos(const std::string thisKey) {
   // get location of given key to retrieve other elements
   if (configs.empty()) return -1;
   auto lower = std::lower_bound(configs.begin(), configs.end(), thisKey, [](
@@ -109,7 +112,7 @@ bool retrieveConfigVal(const char* variable, char* value) {
   return false; 
 }
 
-static void loadVectItem(const std::string keyValGrpLabel) {
+static void loadVectItem(const std::string& keyValGrpLabel) {
   // extract a config tokens from input and load into configs vector
   // comprises key : val : group : type : label
   const int tokens = 5;
@@ -138,9 +141,9 @@ static void saveConfigVect() {
     configs.erase(unique(configs.begin(), configs.end()), configs.end()); // remove any dups
     for (const auto& row: configs) {
       // recreate config file with updated content
-      if (!strcmp(row[0].c_str() + strlen(row[0].c_str()) - 5, "_Pass")) 
+      if ((row[0].length() >= 5 && row[0].compare(row[0].length() - 5, 5, "_Pass") == 0))
         // replace passwords with asterisks
-        snprintf(configLine, FILE_NAME_LEN + 100, "%s%c%.*s%c%s%c%s%c%s\n", row[0].c_str(), DELIM, strlen(row[1].c_str()), FILLSTAR, DELIM, row[2].c_str(), DELIM, row[3].c_str(), DELIM, row[4].c_str());
+        snprintf(configLine, FILE_NAME_LEN + 100, "%s%c%.*s%c%s%c%s%c%s\n", row[0].c_str(), DELIM, (int)row[1].length(), FILLSTAR, DELIM, row[2].c_str(), DELIM, row[3].c_str(), DELIM, row[4].c_str());
       else snprintf(configLine, FILE_NAME_LEN + 100, "%s%c%s%c%s%c%s%c%s\n", row[0].c_str(), DELIM, row[1].c_str(), DELIM, row[2].c_str(), DELIM, row[3].c_str(), DELIM, row[4].c_str());
       file.write((uint8_t*)configLine, strlen(configLine));
       cfgCnt++;
@@ -253,7 +256,6 @@ void updateStatus(const char* variable, const char* _value, bool fromUser) {
   if (!strcmp(variable, "hostName")) strncpy(hostName, value, MAX_HOST_LEN-1);
   else if (!strcmp(variable, "ST_SSID")) strncpy(ST_SSID, value, MAX_HOST_LEN-1);
   else if (!strcmp(variable, "ST_Pass") && value[0] != '*') strncpy(ST_Pass, value, MAX_PWD_LEN-1);
-
   else if (!strcmp(variable, "ST_ip")) strncpy(ST_ip, value, MAX_IP_LEN-1);
   else if (!strcmp(variable, "ST_gw")) strncpy(ST_gw, value, MAX_IP_LEN-1);
   else if (!strcmp(variable, "ST_sn")) strncpy(ST_sn, value, MAX_IP_LEN-1);
@@ -444,25 +446,26 @@ void buildJsonString(uint8_t filter) {
       p += sprintf(p, "\"macAddressWiFi\":\"%s\",", netMacAddress().c_str() ); 
       p += sprintf(p, "\"extIP\":\"%s\",", extIP); 
       p += sprintf(p, "\"httpPort\":\"%u\",", HTTP_PORT); 
-      p += sprintf(p, "\"httpsPort\":\"%u\",", HTTPS_PORT); 
-      p += sprintf(p, "\"ip\":\"%s\",", netLocalIP().toString().c_str());
+      p += sprintf(p, "\"httpsPort\":\"%u\",", HTTPS_PORT);
+      p += sprintf(p, "\"ip\":\"%s\",", formatIPstr());
     }
   } else {
     // build json string for requested config group
     updateAppStatus("custom", "");
     uint8_t cfgGroup = filter - 10; // filter number is length of url query string, config group number is length of string - 10
     p += sprintf(p, "\"cfgGroup\":\"%u\",", cfgGroup);
-    char pwdHide[MAX_PWD_LEN] = {0, };  // used to replace password value with asterisks
+    char pwdHide[MAX_PWD_LEN] = {0};  // used to replace password value with asterisks
     for (const auto& row : configs) {
       if (atoi(row[2].c_str()) == cfgGroup) {
-        int valSize = strlen(row[1].c_str());
+        int valSize = (int)row[1].length();
         if (valSize < sizeof(pwdHide)) {
           strncpy(pwdHide, FILLSTAR, valSize); 
           pwdHide[valSize] = 0;
         }
         // for each config item, list - key:value, key:label text, key:type identifier
         p += sprintf(p, "\"%s\":\"%s\",\"lab%s\":\"%s\",\"typ%s\":\"%s\",", row[0].c_str(),
-          strstr(row[0].c_str(), "_Pass") == NULL ? row[1].c_str() : pwdHide, row[0].c_str(), row[4].c_str(), row[0].c_str(), row[3].c_str()); 
+          row[0].find("_Pass") == std::string::npos ? row[1].c_str() : pwdHide, row[0].c_str(), 
+          row[4].c_str(), row[0].c_str(), row[3].c_str()); 
       }
     }
   }
@@ -559,10 +562,10 @@ bool loadConfig() {
 #if INCLUDE_CERTS
     loadCerts();
 #else
-  if (useHttps) {
-    LOG_WRN("Need to compile with INCLUDE_CERTS true to use HTTPS");
-    useHttps = false;
-  }
+    if (useHttps) {
+      LOG_WRN("Need to compile with INCLUDE_CERTS true to use HTTPS");
+      useHttps = false;
+    }
 #endif
     debugMemory("loadConfig");
     return true;

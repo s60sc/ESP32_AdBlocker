@@ -20,28 +20,8 @@
 #include "appGlobals.h"
 
 void setup() { 
-  logSetup();
-  // prep data storage
-  if (startStorage()) {
-    // Load saved user configuration
-    if (loadConfig()) {
-      if (psramFound()) {
-        LOG_INF("PSRAM size: %s", fmtSize(ESP.getPsramSize()));
-        if (ESP.getPsramSize() < 3 * ONEMEG) 
-          snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Insufficient PSRAM for app");
-      }
-      else snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Need PSRAM to be enabled");
-    }
-  }
-
-#ifdef DEV_ONLY
-  devSetup();
-#endif
-
-  // connect wifi or start config AP if router details not available
-  startNetwork(); 
-  
-  if (startWebServer()) {
+  utilsStartup();
+  if (startNetwork()) {
     // start rest of services
     appSetup();
     checkMemory();

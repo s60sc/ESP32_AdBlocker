@@ -27,9 +27,11 @@
 #define DOT_MAX 50
 #define HOSTNAME_GRP 0
 #define USE_IP6 false
+#define NEED_PSRAM true
+#define MIN_PSRAM 4
 
 #define APP_NAME "ESP32_AdBlocker" // max 15 chars
-#define APP_VER "3.0"
+#define APP_VER "3.1"
 
 #define HTTP_CLIENTS 2 // http, ws
 #define MAX_STREAMS 0
@@ -59,7 +61,7 @@
 #define INCLUDE_WEBDAV true   // webDav.cpp (WebDAV protocol)
 
 // to determine if newer data files need to be loaded
-#define CFG_VER 3
+#define CFG_VER 4
 
 #ifdef CONFIG_IDF_TARGET_ESP32S3 
 #define SERVER_STACK_SIZE (1024 * 8)
@@ -96,6 +98,8 @@
 // global app specific functions
 
 void appSetup();
+IPAddress checkBlocklist(const char* domainName);
+void prepDNS();
 IPAddress resolveDomain(const char* host);
 
 /******************** Global app declarations *******************/

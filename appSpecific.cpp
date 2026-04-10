@@ -1,9 +1,8 @@
 // AdBlocker specific functions
 //
-// s60sc 2020, 2023
+// s60sc 2020, 2023, 2026
 
 #include "appGlobals.h"
-#include "AdBlockerDNSServer.h" // customised
 
 const size_t prvtkey_len = 0;
 const size_t cacert_len = 0;
@@ -16,8 +15,6 @@ static const uint16_t maxLineLen = 1024; // max length of line processed in down
 static uint8_t maxDomLen; // max length of domain name in blocklist
 static char fileURL[IN_FILE_NAME_LEN] = {0};
 static char fmtStorageSize[FILE_NAME_LEN];
-
-static DNSServer dnsServer;
 
 static int timeoutVal = 10000; // 10 secs on download stream data being available
 static size_t blocklistSize = 0;
@@ -160,7 +157,7 @@ static void extractBlocklist() {
     }
   }
 }
-                                                                
+
 static bool downloadBlockList() {
   // download blocklist file from github
   bool res = false;
@@ -180,7 +177,8 @@ static bool downloadBlockList() {
           // file available for download
           // get length of content (is -1 when Server sends no Content-Length header)
           int left = https.getSize();
-          left > 0 ? LOG_INF("File size: %s", fmtSize(left)) : LOG_WRN("File size unknown");
+          if (left > 0) LOG_INF("File size: %s", fmtSize(left));
+          else LOG_WRN("File size unknown");
           LOG_INF("%s memory available for download", fmtStorageSize);
           if (left > storageSize) LOG_WRN("File is larger than memory, may get truncated");
           WiFiClient* stream = https.getStreamPtr(); // stream data to client
@@ -210,7 +208,7 @@ static bool downloadBlockList() {
                 // show progress
                 if (left > 0) {
                   float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
-                  logPrint("%0.1f%%\n", loadProg);
+                  LOG_SEND("%0.1f%%\n", loadProg);
                   sprintf(progStr, "%0.1f%%", loadProg);
                   updateConfigVect("loadProg", progStr);
                 }
@@ -223,8 +221,8 @@ static bool downloadBlockList() {
             }
           }
           ptrs[itemsLoaded] = blocklistSize;
-          LOG_INF("Download complete, processed %s in %u secs", fmtSize(downloadSize), (millis() - loadTime) / 1000);
-          LOG_ALT("Loaded %u blocked domains excluding %u duplicates, using %s of %s", itemsLoaded - 2, duplicates, fmtSize(blocklistSize), fmtStorageSize);
+          LOG_INF("Download complete, processed %s in %lu secs", fmtSize(downloadSize), (millis() - loadTime) / 1000);
+          LOG_ALT("Loaded %lu blocked domains excluding %lu duplicates, using %s of %s", itemsLoaded - 2, duplicates, fmtSize(blocklistSize), fmtStorageSize);
           res = true;
         } else LOG_WRN("Unexpected result code %u %s", httpCode, https.errorToString(httpCode).c_str());
       } else LOG_ERR("Connection failed with error: %s", https.errorToString(httpCode).c_str());
@@ -244,15 +242,6 @@ static bool downloadBlockList() {
   } else if (res) updateConfigVect("loadProg", "Complete");
   else updateConfigVect("loadProg", "Failed");
   return res;
-}
-
-static void prepDNS() {
-  //DNS server startup
-//  DNSServer dnsServer;
-  dnsServer.setErrorReplyCode(DNSReplyCode::ServerFailure);
-  if (dnsServer.start(DNS_DEFAULT_PORT, "*", netLocalIP())) 
-    LOG_INF("DNS Server started on %s:%d", netLocalIP().toString().c_str(), DNS_DEFAULT_PORT);
-  else doRestart("Aborting as DNS Server not running");
 }
 
 static void loadCustom() {
@@ -293,14 +282,14 @@ static void loadCustom() {
     }
     file.close();
   }
-  LOG_ALT("Loaded %u custom blocked domains, unblocked %u domains", customAdded, customDeleted);
+  LOG_ALT("Loaded %lu custom blocked domains, unblocked %lu domains", customAdded, customDeleted);
 }
 
 static void showBlockList(int maxItems = 0) {
   // for info
   if (!maxItems) maxItems = itemsLoaded;
-  for (int i = 0; i < maxItems; i++) logPrint("%d: %s\n", i, storage + ptrs[i]);
-  logPrint("Total %u items\n", itemsLoaded);
+  for (int i = 0; i < maxItems; i++) LOG_SEND("%d: %s\n", i, storage + ptrs[i]);
+  LOG_SEND("Total %lu items\n", itemsLoaded);
 }
 
 static bool loadBlockList(const char* reason) {
@@ -403,7 +392,7 @@ void appSpecificWsHandler(const char* wsMsg) {
     case 'S':
       // status request
       buildJsonString(wsLen); // required config number
-      logPrint("%s\n", jsonBuff);
+      LOG_SEND("%s\n", jsonBuff);
     break;
     case 'U':
       // update or control request
@@ -467,7 +456,7 @@ AP_ip~~0~T~AP IP Address if not 192.168.4.1
 AP_sn~~0~T~AP subnet
 AP_gw~~0~T~AP gateway
 useHttps~0~0~C~Enable HTTPS connection to app
-allowAP~1~0~C~Allow simultaneous AP
+allowAP~0~0~C~Allow simultaneous AP
 timezone~GMT0~1~T~Timezone string: tinyurl.com/TZstring
 logType~0~99~N~Output log selection
 Auth_Name~~0~T~Optional user name for web page login
@@ -498,7 +487,3 @@ ethSclk~-1~3~N~Ethernet SPI clock pin
 ethMiso~-1~3~N~Ethernet SPI MISO pin
 ethMosi~-1~3~N~Ethernet SPI MOSI pin
 )~";
-
-
-
-
