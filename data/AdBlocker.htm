@@ -398,7 +398,7 @@
       <button class="tablinks active" name="AdBlocker" id="mainTab">AdBlocker</button>
       <button class="tablinks" name="ShowLog">Show Log</button>
       <button class="tablinks" name="EditConfig">Edit Config</button>
-      <a href="/web?OTA.htm"><button class="tablinks">OTA Upload</button></a>
+      <button class="tablinks" onclick="window.location.href='/web?OTA.htm'">OTA Upload</button>
     </div>
     <br><br><br>
     <div id="AdBlocker" class="tabcontent" style="display:block">
@@ -577,7 +577,7 @@
       const doInitSSE = false;
 
 
-      const scriptFiles = ['/web?common.js', '../../CommonMaster/Latest/common.js'];
+      const scriptFiles = ['/web?common.js', '../../CommonMaster/common.js'];
       for (let i = 0; i < scriptFiles.length; i++) {
         const scriptElement = document.createElement('script');
         scriptElement.src = scriptFiles[i];
@@ -588,7 +588,7 @@
         initialise();
         getConfig('012');
       });
-      
+
     </script>
   </body>
 </html>
