@@ -10,8 +10,6 @@
    Blocklist files can be downloaded from hosting sites and should either be in HOSTS format 
    or Adblock format (only domain name entries processed)
 
-   arduino-esp32 library DNSServer.cpp modified as custom AdBlockerDNSServer.cpp so that DNSServer::processNextRequest()
-   calls checkBlocklist() in ESP32_AdBlocker to check if domain blocked, which returns the relevant IP. 
    Based on idea from https://github.com/rubfi/esphole
 
    s60sc 2020, 2023
