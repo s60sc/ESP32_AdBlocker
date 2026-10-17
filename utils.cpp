@@ -618,6 +618,8 @@ static void pingTimeout(esp_ping_handle_t hdl, void *args) {
     if (ST_SSID[0]) {
       wl_status_t wStat = WiFi.STA.status();
       if (wStat != WL_NO_SSID_AVAIL && wStat != WL_NO_SHIELD) {
+        // router may not answer pings; a live WiFi connection is proof enough of health
+        if (wStat == WL_CONNECTED && dataFilesChecked) resetCrashLoop();
         if (usePing) {
           LOG_WRN("Failed to ping gateway, restart wifi ...");
           startWifi(false);
