@@ -133,6 +133,7 @@ static int processDNSquery(const uint8_t *rx, int len, uint8_t *tx, int txSize) 
         have = resolveAAAA(domain, a6);         // false => NODATA (client uses A)
       }
       if (have) {
+        res->flags = htons(0x8180);             // QR=1: without it the reply keeps the query flags
         res->ancount = htons(1);
         tx[resp_offset++] = 0xC0; tx[resp_offset++] = 0x0C;
         tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x1C;
