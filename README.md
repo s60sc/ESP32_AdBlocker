@@ -2,10 +2,11 @@
 
 ESP32_AdBlocker acts as a DNS Sinkhole (like [Pi-Hole](https://pi-hole.net/)) by returning 0.0.0.0 for any domain names in its blocklist, else uses an external DNS server to resolve IP addresses. This prevents content being retrieved from or sent to blocked domains. A web server is provided to control the service and monitor its operation.
 
-Version 3.7 includes
+Version 3.8 includes
 * enhancements to DNS query handling and [LED status](#led-status) by user [@dateno1](https://github.com/dateno1)
 * timezone fix
 * fixes from user [@blueheart001](https://github.com/blueheart001)
+* compatibility with arduino-esp core v4.0.0
 
 ## Requirements
 
@@ -94,21 +95,22 @@ Options:
 An onboard or external LED can be use to signal the status of the app, depending on the type of LED available:
 
 Simple LED:
-* AP Mode: Slow blink
-* Active: Steady
-* Offline: Very slow blink
-* Failure: Fast blink
+* Starting: Medium blink
 * Downloading hosts: Medium blink
+* Active: Steady
+* Failure: Rapid blink
+* AP Mode: Fast blink
+* Offline: Slow blink
 
 W2812 RGB LED:
-* AP Mode: Slow blink Yellow
-* Active: Steady Green
-* Offline: Very slow blink Teal
-* Failure: Fast blink Red
+* Starting: Medium blink Cyan
 * Downloading hosts: Medium blink Blue
-* Attempting to download hosts without internet: Flashing Purple
+* Active: Steady Green
+* Failure: Rapid blink Red
+* AP Mode: Fast blink Yellow
+* Offline: Slow blink Magenta
 
 The LED is configured using the **Settings** button in the web page tab **Edit Config**.  
-Setting the LED Pin value to 0 disables the LED.
+Setting the Brightness value to 0 disables the LED.
 
 

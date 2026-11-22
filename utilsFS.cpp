@@ -122,9 +122,12 @@ static void listFolder(const char* rootDir) {
 bool startStorage() {
   // start required storage device (SD card or flash file system)
   bool res = false;
+
 #if (!CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S2)
-  if ((fs::SDMMCFS*)&STORAGE == &SD_MMC) {
-    thisFS = SDMMC;
+  if ((void*)&STORAGE == (void*)&SD_MMC) {
+  	thisFS = SDMMC;
+    // Yield to scheduler to prevent Task Watchdog timeout before slow operation
+    vTaskDelay(pdMS_TO_TICKS(1));
     res = prepSD_MMC();
     if (res) listFolder(DATA_DIR);
     else snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Check SD card inserted");
@@ -132,39 +135,49 @@ bool startStorage() {
     return res; 
   }
 #endif
+
   // One of SPIFFS, LittleFS, FatFS
   if (thisFS == TBD) {
 #ifdef _SPIFFS_H_
-    if ((fs::SPIFFSFS*)&STORAGE == &SPIFFS) {
+    if ((void*)&STORAGE == (void*)&SPIFFS) {
       thisFS = SPIFFSS;
+      // Yield to scheduler to prevent Task Watchdog timeout before slow operation
+      vTaskDelay(pdMS_TO_TICKS(1));
       res = SPIFFS.begin(formatIfMountFailed);
     }
 #endif
 #ifdef _LITTLEFS_H_
-    if ((fs::LittleFSFS*)&STORAGE == &LittleFS) {
+    if ((void*)&STORAGE == (void*)&LittleFS) {
       thisFS = LITTLEFS;
+      // Yield to scheduler to prevent Task Watchdog timeout before slow operation
+      vTaskDelay(pdMS_TO_TICKS(1));
       res = LittleFS.begin(formatIfMountFailed);
       // create data folder if not present
       if (res) LittleFS.mkdir(DATA_DIR);
     }
 #endif
 #ifdef _FATFS_H_
-    if ((fs::FATFS*)&STORAGE == &FFat) {
+    if ((void*)&STORAGE == (void*)&FFat) {
       thisFS = FATFSS;
+      // Yield to scheduler to prevent Task Watchdog timeout before slow operation
+      vTaskDelay(pdMS_TO_TICKS(1));
       res = FFat.begin(formatIfMountFailed);
       // create data folder if not present
       if (res && !FFat.exists(DATA_DIR)) FFat.mkdir(DATA_DIR);
     }
 #endif
   }
+
   if (res) {
     // list details of files on file system
-    const char* rootDir = thisFS == LITTLEFS ? DATA_DIR : "/";
+    const char* rootDir = (thisFS == LITTLEFS) ? DATA_DIR : "/";
     listFolder(rootDir);
   } else {
-    snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Failed to mount %s", fsTypes[thisFS]);  
+    const char* fsName = (thisFS != TBD) ? fsTypes[thisFS] : "Unknown";
+    snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Failed to mount %s", fsName);  
     dataFilesChecked = true; // disable setupAssist as no file system
   }
+
   debugMemory("startStorage");
   return res;
 }
@@ -462,7 +475,7 @@ esp_err_t downloadFile(File& df, httpd_req_t* req) {
 bool formatSDcard() {
   // format SD card, erases existing content
   // can take some time to complete
-  // invoke from url: <cam ip>/control?formatSD=1
+  // invoke from url: <cam ip>/control?formatsd=1
   LOG_INF("Format the SD card, wait ...");
   char drv[3] = {'0', ':', 0};
   const size_t workbuf_size = 4096;

@@ -85,42 +85,53 @@ void loadCerts() {
 /*****************************************************************/
 
 TaskHandle_t checkDataHandle = NULL;
+static bool abandonDL = false;
 
 static bool wgetFile(const char* filePath) {
   // download required data file from github repository and store
   bool res = false;
   if (!STORAGE.exists(filePath)) {
-    NetworkClientSecure wclient;
-    if (remoteServerConnect(wclient, GITHUB_HOST, HTTPS_PORT, SETASSIST)) {
-      char downloadURL[150];
-      snprintf(downloadURL, 150, "%s%s", GITHUB_PATH, filePath);
-      File f = STORAGE.open(filePath, FILE_WRITE);
-      if (f) {
-        HTTPClient https;
-        if (https.begin(wclient, GITHUB_HOST, HTTPS_PORT, downloadURL)) {
-          LOG_INF("Downloading %s from %s", filePath, downloadURL);
-          int httpCode = https.GET();
-          int fileSize = 0;
-          if (httpCode == HTTP_CODE_OK) {
-            fileSize = https.writeToStream(&f);
-            if (fileSize <= 0) {
-              LOG_WRN("Download failed: writeToStream - %s", https.errorToString(fileSize).c_str());
-              httpCode = 0;
-            } else LOG_INF("Downloaded %s, size %s", filePath, fmtSize(fileSize));       
-          } else LOG_WRN("Download failed, error: %s", https.errorToString(httpCode).c_str());    
-          https.end();
-          f.close();
-          if (httpCode == HTTP_CODE_OK) {
-            if (!strcmp(filePath, CONFIG_FILE_PATH)) doRestart("Config file downloaded");
-            res = true;
-          } else {
-            LOG_WRN("HTTP Get failed with code: %d", httpCode);
-            STORAGE.remove(filePath);
-          }
+    bool isSecure = false;
+    NetworkClientSecure sclient;
+    NetworkClient pclient;
+    if (remoteServerConnect(sclient, GITHUB_HOST, HTTPS_PORT, SETASSIST)) isSecure = true;
+    else if (remoteServerConnect(pclient, GITHUB_HOST, HTTP_PORT, SETASSIST)) isSecure = false;
+    else return false; // failed to make connection
+
+    char downloadURL[150];
+    snprintf(downloadURL, 150, "%s%s", GITHUB_PATH, filePath);
+    File f = STORAGE.open(filePath, FILE_WRITE);
+    if (f) {
+      HTTPClient https;
+      if (isSecure) res = https.begin(sclient, GITHUB_HOST, HTTPS_PORT, downloadURL);
+      else res = https.begin(pclient, GITHUB_HOST, HTTP_PORT, downloadURL);
+      if (res) {
+        LOG_INF("Downloading %s from %s over HTTP%s", filePath, downloadURL, isSecure ? "S" : "");
+        int httpCode = https.GET();
+        int fileSize = 0;
+        if (httpCode == HTTP_CODE_OK) {
+          fileSize = https.writeToStream(&f);
+          if (fileSize <= 0) {
+            LOG_WRN("Download failed: writeToStream - %s", https.errorToString(fileSize).c_str());
+            httpCode = 0;
+          } else LOG_INF("Downloaded %s, size %s", filePath, fmtSize(fileSize));       
+        } else LOG_WRN("Download failed, error: %s", https.errorToString(httpCode).c_str());    
+        https.end();
+        f.close();
+        if (httpCode == HTTP_CODE_OK) {
+          if (!strcmp(filePath, CONFIG_FILE_PATH)) doRestart("Config file downloaded");
+          res = true;
+        } else {
+          LOG_WRN("HTTP Get failed with code: %d", httpCode);
+          STORAGE.remove(filePath);
+#ifdef CONFIG_IDF_TARGET_ESP32
+          // ESP32 devices may no longer have enough memory for HTTPS connection on this app due to increasing size of arduino-esp32 core memory footprint
+          if (httpCode == 301) abandonDL = true;
+#endif
         }
-      } else LOG_WRN("Open failed: %s", filePath);
-    }
-    remoteServerClose(wclient);
+      }
+    } else LOG_WRN("Open failed: %s", filePath);
+    isSecure ? remoteServerClose(sclient) : remoteServerClose(pclient);
   } else res = true;
   return res;
 }
@@ -132,7 +143,10 @@ static void checkDataFilesTask(void* parameter) {
   wgetFile(INDEX_PAGE_PATH);
   delay(100);
   appDataFiles(); 
-  doRestart("Restart after web file download");
+  if (abandonDL) {
+    snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Insufficient memory to download /data folder files, OTA files from local folder");
+    LOG_WRN("%s", startupFailure);
+  } else doRestart("Restart after web file download");
   vTaskDelete(NULL);
 }
 
@@ -149,22 +163,25 @@ static bool checkFilePresent(const char* filePath) {
 
 void checkDataFiles() {
   // check if required files have been downloaded
-  bool res = true;
-  if (strlen(GITHUB_PATH)) { 
-     res = checkFilePresent(COMMON_JS_PATH);
-    if (res) res = checkFilePresent(INDEX_PAGE_PATH);
-    if (!res) {
-      if (WiFi.status() == WL_NO_SSID_AVAIL || WiFi.status() == WL_DISCONNECTED) LOG_WRN("Need to connect to AP to setup router");
-      else if (WiFi.status() != WL_CONNECTED) snprintf(startupFailure, SF_LEN, STARTUP_FAIL "No internet connection to download files");
-      else if (checkDataHandle == NULL) {
-        // separate transient download task due to TLS memory usage 
-        LOG_INF("Download web files then restart");
-        xTaskCreate(&checkDataFilesTask, "checkDataFilesTask", CHECK_STACK_SIZE, NULL, CHECK_PRI, &checkDataHandle);
-      }
-      if (strlen(startupFailure)) LOG_WRN("%s", startupFailure);
-    } // else no download needed if GITHUB_PATH not defined
+  if (abandonDL) dataFilesChecked = true;
+  else {
+    bool res = true;
+    if (strlen(GITHUB_PATH)) { 
+      res = checkFilePresent(COMMON_JS_PATH);
+      if (res) res = checkFilePresent(INDEX_PAGE_PATH);
+      if (!res) {
+        if (WiFi.status() == WL_NO_SSID_AVAIL || WiFi.status() == WL_DISCONNECTED) LOG_WRN("Need to connect to AP to setup router");
+        else if (WiFi.status() != WL_CONNECTED) snprintf(startupFailure, SF_LEN, STARTUP_FAIL "No internet connection to download files");
+        else if (checkDataHandle == NULL) {
+          // separate transient download task due to TLS memory usage 
+          LOG_INF("Download web files then restart");
+          xTaskCreate(&checkDataFilesTask, "checkDataFilesTask", CHECK_STACK_SIZE, NULL, CHECK_PRI, &checkDataHandle);
+        }
+        if (startupFailure[0]) LOG_WRN("%s", startupFailure);
+      } // else no download needed if GITHUB_PATH not defined
+    }
+    if (res) dataFilesChecked = true;
   }
-  if (res) dataFilesChecked = true;
 }
 
 const char* setupPage_html = R"~(

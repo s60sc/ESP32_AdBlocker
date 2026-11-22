@@ -22,11 +22,15 @@ bool heartBeatDone = false;
 
 static byte* chunk;
 
+// Authorization cache static variables
+static char expectedAuthCache[128] = {0};
+static bool authCacheValid = false;
+
 esp_err_t sendChunks(File df, httpd_req_t *req, bool endChunking) {   
   // use chunked encoding to send large content to browser
   size_t chunksize = 0;
   esp_err_t res = ESP_OK;
-  const size_t sendBlockSize = 1024; // fit cleanly within 1 TCP MSS for lwIP flow control
+  const size_t sendBlockSize = 1440; // Aligned with default value of TCP_MSS (1440) - maximum safe capacity in the official arduino-esp32 core, for optimal lwIP flow control
   while ((chunksize = df.read(chunk, sendBlockSize))) {
   	res = httpd_resp_send_chunk(req, (char*)chunk, chunksize);
     if (res != ESP_OK) break;
@@ -92,17 +96,43 @@ static void displayLog(httpd_req_t *req) {
   } 
 }
 
-bool checkAuth(httpd_req_t* req) {
-  // check if authentication is required
+void updateAuthCache() {
+  // Pre-compute and cache the expected Authorization header value
   if (Auth_Name[0] && Auth_Pass[0]) {
-    // authentication required
     size_t credLen = strlen(Auth_Name) + strlen(Auth_Pass) + 2; // +2 for colon & terminator
     char credentials[credLen];
     snprintf(credentials, credLen, "%s:%s", Auth_Name, Auth_Pass);
     const char* encodedCreds = encode64(credentials);
     size_t expectedLen = (sizeof("Basic ") - 1) + strlen(encodedCreds) + 1;
-    char expectedAuth[expectedLen];
-    snprintf(expectedAuth, expectedLen, "Basic %s", encodedCreds);
+    
+    if (expectedLen < sizeof(expectedAuthCache)) {
+      snprintf(expectedAuthCache, sizeof(expectedAuthCache), "Basic %s", encodedCreds);
+      authCacheValid = true;
+    } else {
+      authCacheValid = false; // Credentials too long for the fixed cache
+    }
+  } else {
+    expectedAuthCache[0] = '\0';
+    authCacheValid = false;
+  }
+}
+
+bool checkAuth(httpd_req_t* req) {
+  // check if authentication is required
+  if (Auth_Name[0] && Auth_Pass[0]) {
+    // Lazy initialization of the cached credentials if not already valid
+    if (!authCacheValid) {
+      updateAuthCache();
+    }
+
+    // Fallback deny if cache couldn't be built (e.g., credentials exceeded cache size)
+    if (!authCacheValid) {
+      httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic");
+      httpd_resp_set_status(req, "401 Unauthorised");
+      httpd_resp_sendstr(req, NULL);
+      return false;
+    }
+
     size_t authHdrLen = httpd_req_get_hdr_value_len(req, "Authorization");
     bool authenticated = false;
 
@@ -111,9 +141,12 @@ bool checkAuth(httpd_req_t* req) {
       size_t authLen = authHdrLen + 1;
       char auth[authLen];
       if (httpd_req_get_hdr_value_str(req, "Authorization", auth, authLen) == ESP_OK) {
-        if (strcmp(auth, expectedAuth) == 0) authenticated = true;
+        if (strcmp(auth, expectedAuthCache) == 0) {
+          authenticated = true;
+        }
       }
     }
+    
     if (!authenticated) {
       // not authenticated
       httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic");
@@ -204,70 +237,83 @@ esp_err_t extractQueryKeyVal(httpd_req_t *req, char* variable, char* value, size
   return ESP_OK;
 }
 
+// MIME lookup table and helper function
+struct MimeEntry {
+    const char* ext;
+    const char* mime;
+};
+
+static const MimeEntry mimeTable[] = {
+    {".html", "text/html"},
+    {".htm",  "text/html"},
+    {".js",   "text/javascript"},
+    {".css",  "text/css"},
+    {".txt",  "text/plain"},
+    {".ico",  "image/x-icon"},
+    {".svg",  "image/svg+xml"},
+    {NULL,    NULL} // Sentinel
+};
+
+static const char* getMimeType(const char* filename) {
+    if (!filename) return "application/octet-stream";
+    const char* dot = strrchr(filename, '.');
+    if (dot) {
+        for (size_t i = 0; mimeTable[i].ext != NULL; i++) {
+            // Case-insensitive comparison for file extensions
+            if (strcasecmp(dot, mimeTable[i].ext) == 0) {
+                return mimeTable[i].mime;
+            }
+        }
+    }
+    return "application/octet-stream"; // Default fallback for unknown types
+}
+
 static esp_err_t webHandler(httpd_req_t* req) {
-  if (!checkAuth(req)) return ESP_OK;
-  // return required web page or component to browser using filename from query string
-  size_t queryLen = httpd_req_get_url_query_len(req) + 1;
-  if (queryLen > FILE_NAME_LEN) {
-    LOG_ERR("Query string too long");
-    httpd_resp_set_status(req, "400 Invalid query string");
-    httpd_resp_sendstr(req, NULL);
-    return ESP_FAIL;
-  }
-  httpd_req_get_url_query_str(req, variable, queryLen);
-  urlDecode(variable);
+    if (!checkAuth(req)) return ESP_OK;
+    
+    // Return required web page or component to browser using filename from query string
+    size_t queryLen = httpd_req_get_url_query_len(req) + 1;
+    if (queryLen > FILE_NAME_LEN) {
+        LOG_ERR("Query string too long");
+        httpd_resp_set_status(req, "400 Invalid query string");
+        httpd_resp_sendstr(req, NULL);
+        return ESP_FAIL;
+    }
+    
+    httpd_req_get_url_query_str(req, variable, queryLen);
+    urlDecode(variable);
 
-  // Strip query parameters for cache busting (e.g. common.js?v=41)
-  char* qmark = strchr(variable, '?');
-  if (qmark != NULL) *qmark = '\0';
-  char* ampersand = strchr(variable, '&');
-  if (ampersand != NULL) *ampersand = '\0';
+    // Strip query parameters for cache busting (e.g., common.js?v=41)
+    char* qmark = strchr(variable, '?');
+    if (qmark != NULL) *qmark = '\0';
+    char* ampersand = strchr(variable, '&');
+    if (ampersand != NULL) *ampersand = '\0';
 
-  if (isPathTraversal(variable)) {
-    LOG_WRN("Path traversal attempt detected in URL query: %s", variable);
-    httpd_resp_send_404(req);
-    return ESP_FAIL;
-  }
-  // check file extension to determine required processing before response sent to browser
-  size_t varLen = strlen(variable);
-  if (!strcmp(variable, "OTA.htm")) {
-    // request for built in OTA page, if index html defective
-    httpd_resp_set_type(req, "text/html"); 
-    return httpd_resp_sendstr(req, otaPage_html);
-  } else if (!strcmp(HTML_EXT, variable+(varLen-strlen(HTML_EXT)))) {
-    // any other html file
-    httpd_resp_set_type(req, "text/html");
-  } else if (!strcmp(JS_EXT, variable+(varLen-strlen(JS_EXT)))) {
-    // any js file
-    httpd_resp_set_type(req, "text/javascript");
-  } else if (!strcmp(CSS_EXT, variable+(varLen-strlen(CSS_EXT)))) {
-    // any css file
-    httpd_resp_set_type(req, "text/css");
-  } else if (!strcmp(TEXT_EXT, variable+(varLen-strlen(TEXT_EXT)))) {
-    // any text file
-    httpd_resp_set_type(req, "text/plain");
-  } else if (!strcmp(ICO_EXT, variable+(varLen-strlen(ICO_EXT)))) {
-    // any icon file
-    httpd_resp_set_type(req, "image/x-icon");
-  } else if (!strcmp(SVG_EXT, variable+(varLen-strlen(SVG_EXT)))) {
-    // any svg file
-    httpd_resp_set_type(req, "image/svg+xml");
-  } else LOG_WRN("Unknown file type %s", variable);  
+    // Special case for built-in OTA page, if index html is defective
+    if (!strcmp(variable, "OTA.htm")) {
+        httpd_resp_set_type(req, "text/html"); 
+        return httpd_resp_sendstr(req, otaPage_html);
+    }
 
-  if (isPathTraversal(variable)) {
-    LOG_WRN("Path traversal attempt detected before formatting: %s", variable);
-    httpd_resp_send_404(req);
-    return ESP_FAIL;
-  }
-  
-  int dlen = snprintf(inFileName, IN_FILE_NAME_LEN - 1, "%s/%s", DATA_DIR, variable);               
-  if (dlen >= IN_FILE_NAME_LEN) LOG_WRN("file name truncated");
-  if (isPathTraversal(inFileName)) {
-    LOG_WRN("Path traversal attempt detected in formatted path: %s", inFileName);
-    httpd_resp_send_404(req);
-    return ESP_FAIL;
-  }
-  return fileHandler(req);
+    // Construct full path first
+    int dlen = snprintf(inFileName, sizeof(inFileName), "%s/%s", DATA_DIR, variable);               
+    if (dlen < 0 || dlen >= sizeof(inFileName)) {
+        LOG_WRN("File name truncated or snprintf error");
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    // Single robust path traversal check AFTER path construction
+    if (isPathTraversal(inFileName)) {
+        LOG_WRN("Path traversal attempt detected in formatted path: %s", inFileName);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    // Set MIME type using optimized lookup table
+    httpd_resp_set_type(req, getMimeType(variable));
+
+    return fileHandler(req);
 }
 
 static esp_err_t controlHandler(httpd_req_t *req) {
@@ -350,12 +396,20 @@ static esp_err_t sseHandler(httpd_req_t *req) {
   const char sseHeader[] = "HTTP/1.1 200 OK\r\n"
                           "Cache-Control: no-store\r\n"
                           "Connection: keep-alive\r\n"
+                          "Access-Control-Allow-Origin: *\r\n"
                           "Content-Type: text/event-stream\r\n\r\n";
   sseSocketHD = req->handle;
   sseSocketFD = httpd_req_to_sockfd(req);
   httpd_socket_send(sseSocketHD, sseSocketFD, sseHeader, strlen(sseHeader), 0); 
-  sendSSE("open", "opened");
   return ESP_OK;
+}
+
+static void onClose(httpd_handle_t hd, int fd) {
+  if (fd == sseSocketFD) {
+    sseSocketFD = -1;
+    sseSocketHD = NULL;
+  }
+  close(fd);
 }
 
 #define SSESEP "\r\n\r\n" // SSE event separator
@@ -368,10 +422,10 @@ void sendSSE(const char* eventType, const char* eventData) {
     int res = httpd_socket_send(sseSocketHD, sseSocketFD, eventMsg, msgLen, 0);
     res = httpd_socket_send(sseSocketHD, sseSocketFD, eventData, strlen(eventData), 0);
     res = httpd_socket_send(sseSocketHD, sseSocketFD, SSESEP, (sizeof(SSESEP) - 1), 0);
-    if (res == HTTPD_SOCK_ERR_TIMEOUT) LOG_WRN("Timeout/interrupted while using socket");
-    if (res == HTTPD_SOCK_ERR_FAIL) LOG_WRN("Unrecoverable error while using socket");
-    if (res == HTTPD_SOCK_ERR_INVALID) LOG_WRN("Invalid arguments %s, %s", eventType, eventData);
-  } else LOG_ERR("SSE not initiated");
+    if (res == HTTPD_SOCK_ERR_TIMEOUT) esp_rom_printf("SENDSSE: Timeout/interrupted while using socket\n");
+    if (res == HTTPD_SOCK_ERR_FAIL) esp_rom_printf("SENDSSE: Unrecoverable error while using socket\n");
+    if (res == HTTPD_SOCK_ERR_INVALID) esp_rom_printf("SENDSSE: Invalid arguments %s, %s\n", eventType, eventData);
+  }
 }
 
 static esp_err_t updateHandler(httpd_req_t *req) {
@@ -627,7 +681,25 @@ static esp_err_t customOrNotFoundHandler(httpd_req_t *req, httpd_err_code_t err)
 
 bool startWebServer() {
   esp_err_t res = ESP_FAIL;
-  if (!chunk) chunk = psramFound() ? (byte*)ps_malloc(CHUNKSIZE) : (byte*)malloc(CHUNKSIZE);
+  // Allocate chunk buffer, preferring internal DRAM to reduce latency during sendChunks
+  if (!chunk) {
+    // Check available internal DRAM (leaving a 4KB safety margin for other critical internal allocations)
+    size_t freeInternalHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    
+    if (freeInternalHeap >= (CHUNKSIZE + 4096)) { // 4KB safety margin check for other critical internal allocations
+      chunk = (byte*)malloc(CHUNKSIZE); // Internal memory first, external fallback.
+    } else if (psramFound()) {
+      chunk = (byte*)ps_malloc(CHUNKSIZE);
+    } else {
+      chunk = (byte*)malloc(CHUNKSIZE); // Fallback if PSRAM is not available
+    }
+    
+    if (!chunk) {
+      LOG_ERR("Failed to allocate chunk buffer (%d bytes)", CHUNKSIZE);
+      snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Failed to allocate web server chunk buffer");
+      return false;
+    }
+  }
   if (httpServer) {
     httpd_stop(httpServer);
     httpServer = NULL;
@@ -647,7 +719,14 @@ bool startWebServer() {
   
     //config.user_cb = https_server_user_callback;
     config.httpd.server_port = HTTPS_PORT;
+////config.backlog = 16;                 // Queue incoming connections during spikes
+////config.open_timeout = 5;             // Close connections if no data is sent within 5s
+    config.httpd.max_resp_headers = 16;		 // maximum number of headers in an HTTP response
+    config.httpd.keep_alive_enable = true;     // Enable persistent connections
+    config.httpd.keep_alive_idle = 10;         // Seconds before sending Keep-Alive probes
+    config.httpd.keep_alive_interval = 5;      // Seconds between Keep-Alive probes
     config.httpd.lru_purge_enable = true; // close least used socket 
+    config.httpd.close_fn = onClose;
     config.httpd.max_uri_handlers = MAX_HANDLERS;
     config.httpd.max_open_sockets = HTTP_CLIENTS + MAX_STREAMS;
     config.httpd.task_priority = HTTP_PRI;
@@ -663,7 +742,14 @@ bool startWebServer() {
     config.stack_size = SERVER_STACK_SIZE;
 #endif
     config.server_port = HTTP_PORT;
+////config.backlog = 16;             // Queue incoming connections during spikes
+////config.open_timeout = 5;         // Close connections if no data is sent within 5s
+    config.max_resp_headers = 16;		     // maximum number of headers in an HTTP response
+    config.keep_alive_enable = true;     // Enable persistent connections
+    config.keep_alive_idle = 10;         // Seconds before sending Keep-Alive probes
+    config.keep_alive_interval = 5;      // Seconds between Keep-Alive probes
     config.lru_purge_enable = true;
+    config.close_fn = onClose;
     config.max_uri_handlers = MAX_HANDLERS;
     config.max_open_sockets = HTTP_CLIENTS + MAX_STREAMS;
     config.task_priority = HTTP_PRI;

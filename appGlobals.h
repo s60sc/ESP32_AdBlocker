@@ -30,7 +30,8 @@
 #define MIN_PSRAM 4
 
 #define APP_NAME "ESP32_AdBlocker" // max 15 chars
-#define APP_VER "3.7"
+#define APP_VER "3.8"
+#define CFG_VER 9 // to determine if newer data files need to be loaded
 
 #define HTTP_CLIENTS 2 // http, ws
 #define MAX_STREAMS 0
@@ -59,9 +60,6 @@
 #define INCLUDE_CERTS false   // setupAssist.cpp (if using app https server)
 #define INCLUDE_WEBDAV true   // webDav.cpp (WebDAV protocol)
 
-// to determine if newer data files need to be loaded
-#define CFG_VER 8
-
 #ifdef CONFIG_IDF_TARGET_ESP32S3 
 #define SERVER_STACK_SIZE (1024 * 8)
 #define DS18B20_STACK_SIZE (1024 * 2)
@@ -84,6 +82,7 @@
 #define TELEM_STACK_SIZE (1024 * 4)
 #define UART_STACK_SIZE (1024 * 2)
 #define CHECK_STACK_SIZE (1024 * 6)
+#define LED_STACK_SIZE (1024 * 2)
 
 // task priorities
 #define HTTP_PRI 5
@@ -95,6 +94,7 @@
 #define UART_PRI 1
 #define BATT_PRI 1
 #define CHECK_PRI 1
+#define LED_PRI 1
 
 // Private CA
 #define CA_PEM_PATH "/data/CA.pem"   // #define CA_PEM_PATH "/data/CA.pem" // optional extra root store (PEM, multi-cert allowed)
@@ -105,6 +105,7 @@ bool resolveAAAA(const char* host, uint8_t out[16]); // true + 16-byte address o
 
 #define NO_WIFI_SLEEP  // maximise DNS response times
 
+enum class DevStatus : uint8_t { NA, STARTING, FAILURE, DOWNLOAD, READY, OFFLINE, AP_MODE, Count };  // device status shown by LED 
 
 /******************** Function declarations *******************/
 
@@ -112,6 +113,9 @@ bool resolveAAAA(const char* host, uint8_t out[16]); // true + 16-byte address o
 
 bool appSetup();
 void prepDNS();
+void setLamp(DevStatus s);
+void setLamp(DevStatus s, Brightness b);
+
 /******************** Added for More Functions *******************/
 /* ---------- AdBlocker DNS result contract ----------
  * Shared between appSpecific.cpp (blocklist decision)
@@ -133,11 +137,8 @@ IPAddress resolveDomain(const char* domainName); // Legacy wrapper: returns IP o
 
 extern const char* appConfig;
 
-// Adjust Brightness
-#define LED_R_MAX        255   // per-channel max, lets you color-balance (dim blue etc)
-#define LED_G_MAX        255
-#define LED_B_MAX        255
-
-enum LedState { LED_OK = 0, LED_OFFLINE, LED_DOWNLOAD, LED_AP_MODE, LED_FAIL };
-void setLedState(LedState s);
+extern int lampPin;
+extern int lampType;
+extern int lampActiveHi;
+extern uint8_t lampLevel;
 

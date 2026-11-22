@@ -24,6 +24,7 @@ void setup() {
     appSetup();
     checkMemory();
   }
+  checkAppReady();
 }
 
 void loop() {

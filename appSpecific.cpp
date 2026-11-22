@@ -36,77 +36,6 @@ static char*  g_caBuf = nullptr;  // NUL-terminated PEM text
 static size_t g_caLen = 0;
 static bool   g_caTried = false;  // load-once flag
 
-/* ── Status LED board profiles ─────────────────────────
- *  ESP32-S3 Dev Module : LED_PIN 48, LED_IS_SIMPLE 0, LED_BRIGHTNESS 16
- *  XIAO ESP32-S3 Plus  : LED_PIN 21, LED_IS_SIMPLE 1, ACTIVE_HIGH 0
- * ──────────────────────────────────────────────────── */
-#include "driver/rmt_tx.h"
-
-static LedState wantLed = LED_OK;
-static int xLedPin = 2;  // pin used to control led, 0 means led not used
-static bool xLedPull = false;  // true if led active when pulled high
-static bool xLedSimple = true; // false if WS2812 led used
-static int xledVol = 16; // 0-255 overall intensity; 8-32 is plenty indoors (S3 Dev Board 16~20 but Plus Need More)
-static uint8_t palR[5], palG[5], palB[5];
-
-void setLedState(LedState s) { wantLed = s; }
-
-void ledApplyConfig() {
-  const uint8_t bR[5] = {0,0,0,255,255};
-  const uint8_t bG[5] = {255,255,0,255,0};
-  const uint8_t bB[5] = {0,255,255,0,0};
-  for (int i = 0; i < 5; i++) {
-    palR[i] = (uint8_t)((uint32_t)bR[i] * xledVol * LED_R_MAX / 65025);
-    palG[i] = (uint8_t)((uint32_t)bG[i] * xledVol * LED_G_MAX / 65025);
-    palB[i] = (uint8_t)((uint32_t)bB[i] * xledVol * LED_B_MAX / 65025);
-  }
-}
-
-static inline void ledWrite(uint8_t r, uint8_t g, uint8_t b) {
-  if (xLedSimple) {
-    // single-color LED: any nonzero channel = "lit"
-    bool lit = (r || g || b);
-    // reverse brightness for active low
-    analogWrite(xLedPin, lit ? (xLedPull ? xledVol : 0) : (xLedPull ? 255 - xledVol : 255)); 
-  } else rgbLedWrite(xLedPin, r, g, b);
-}
-
-static void ledTask(void *parameter) {
-  ledApplyConfig(); // build palR/palG/palB from current settings
-  // blink period per state (ms); 0 = steady
-  //   OK  OFFLINE  DOWNLOAD  AP_MODE  FAIL
-  const uint32_t BLINK[5] = {0, 1000, 300, 600, 150};     
-
-  LedState shown = LED_OK;
-  bool on = true;
-  uint32_t lastToggle = 0;
-  uint32_t lastSteady = 0;
-
-  for (;;) {
-    if (wantLed != shown) {
-      shown = wantLed; on = true; lastToggle = millis();
-      ledWrite(palR[shown], palG[shown], palB[shown]);   // immediate feedback
-      lastSteady = millis();
-    }
-
-    uint32_t period = BLINK[shown];
-    if (period == 0) {
-      if (millis() - lastSteady >= 1000) {
-        ledWrite(palR[shown], palG[shown], palB[shown]);
-        lastSteady = millis();
-      }
-      vTaskDelay(pdMS_TO_TICKS(50));
-    } else {
-      if (millis() - lastToggle >= period) {
-        on = !on;
-        lastToggle = millis();
-        ledWrite(on ? palR[shown] : 0, on ? palG[shown] : 0, on ? palB[shown] : 0);
-      }
-      vTaskDelay(pdMS_TO_TICKS(20));
-    }
-  }
-}
-
 static uint32_t binarySearch(const char* searchStr, bool doUpdate) {
   // binary split search
   // for an update, return 0 if found (duplicate) else return ptr
@@ -369,7 +298,7 @@ static bool downloadBlockList() {
                 // show progress
                 if (left > 0) {
                   float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
-                  LOG_SEND("%0.1f%%\n", loadProg);
+                  LOG_RAW("%0.1f%%\n", loadProg);
                   sprintf(progStr, "%0.1f%%", loadProg);
                   updateConfigVect("loadProg", progStr);
                 }
@@ -449,8 +378,8 @@ static void loadCustom() {
 static void showBlockList(int maxItems = 0) {
   // for info
   if (!maxItems) maxItems = itemsLoaded;
-  for (int i = 0; i < maxItems; i++) LOG_SEND("%d: %s\n", i, storage + ptrs[i]);
-  LOG_SEND("Total %lu items\n", itemsLoaded);
+  for (int i = 0; i < maxItems; i++) LOG_RAW("%d: %s\n", i, storage + ptrs[i]);
+  LOG_RAW("Total %lu items\n", itemsLoaded);
 }
 
 /* incremental CRC32 */
@@ -565,10 +494,10 @@ static void saveSnapshot() {
     if (cl >= maxCur) {                            // unterminated entry!
       LOG_ERR("Snap: entry %u UNTERMINATED at offset %u",
               (unsigned)i, (unsigned)ptrs[i]);
-      LOG_SEND("first32: ");
+      LOG_RAW("first32: ");
       for (size_t k = 0; k < 32 && ptrs[i] + k < blocklistSize; k++)
-        LOG_SEND("%02x ", cur[k]);
-      LOG_SEND("\n");
+        LOG_RAW("%02x ", cur[k]);
+      LOG_RAW("\n");
       ok = false;
       break;
     }
@@ -817,15 +746,13 @@ static bool loadBlockList(const char* reason) {
      * Rollback safety: the previous generation lives in the flash snapshot.
      * Without a snapshot (very first ever run or not enabled), fall back to merge-mode */
     bool canReplace = restored || STORAGE.exists(SNAP_PATH);
-                                                                     
-                                                                     
-    setLedState(LED_DOWNLOAD); //Change Status LED
+    setLamp(DevStatus::DOWNLOAD); //Change Status LED
     if (timeSynchronized || !useSecure) {
       if (canReplace && itemsLoaded > 2) resetBlocklistStorage(); // fresh build, not merge
       res = downloadBlockList();
       if (!res) resetBlocklistStorage();
       if (res) {
-        setLedState(LED_OK); //Change Status LED
+        setLamp(DevStatus::READY); //Change Status LED
         lastLoadMs = millis();
         startupFailure[0] = 0;
         if (useSnap) saveSnapshot(); // new generation persisted
@@ -833,13 +760,13 @@ static bool loadBlockList(const char* reason) {
         /* rebuild failed - reinstate previous generation from flash */
         resetBlocklistStorage();
         if (useSnap) restored = loadSnapshot();
-        setLedState(LED_OFFLINE); //Change Status LED
+        setLamp(DevStatus::OFFLINE); //Change Status LED
         if (itemsLoaded <= 2) {
           if (!strlen(ST_SSID))
             LOG_ALT("First-time setup: set router SSID/Password in Network Settings");
           else {
             snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Blocklist URL %s failed to load", fileURL);
-            setLedState(LED_FAIL); //Change Status LED
+            setLamp(DevStatus::FAILURE); //Change Status LED
             LOG_WRN("%s", startupFailure);
           }
         } else {
@@ -859,9 +786,9 @@ static bool loadBlockList(const char* reason) {
       loadCustom();  // apply user provided rules either way
     } else {
       LOG_WRN("Network/time not ready (%s)", strlen(ST_SSID) ? (netIsConnected() ? "clock" : "wifi") : "unconfigured");
-      if (!strlen(ST_SSID)) setLedState(LED_AP_MODE); // prepDNS re-asserts anyway
-      else if (itemsLoaded > 2) setLedState(LED_OFFLINE);   // cached list serving
-      else setLedState(LED_FAIL);
+      if (!strlen(ST_SSID)) setLamp(DevStatus::AP_MODE); // prepDNS re-asserts anyway
+      else if (itemsLoaded > 2) setLamp(DevStatus::OFFLINE);   // cached list serving
+      else setLamp(DevStatus::FAILURE);
     }
     downloading = false;
   } else LOG_WRN("Ignore request as download in progress");
@@ -893,10 +820,9 @@ bool appSetup() {
   resetBlocklistStorage();
   updateConfigVect("blockCnt", "0");
   updateConfigVect("allowCnt", "0");
-  if (xLedPin) xTaskCreatePinnedToCore(ledTask, "ledTask", 2048, NULL, 1, NULL, 1); // Change Status LED
-  if (!strlen(ST_SSID)) setLedState(LED_AP_MODE);   // setup-needed state ASAP
+  if (!strlen(ST_SSID)) setLamp(DevStatus::AP_MODE);   // setup-needed state ASAP
   loadBlockList("Initial"); // best effort - DNS starts regardless
-  if (!strlen(ST_SSID)) setLedState(LED_AP_MODE); //Change Status LED
+  if (!strlen(ST_SSID)) setLamp(DevStatus::AP_MODE); //Change Status LED
   prepDNS();
   appSetupDone = true;
   return true;
@@ -954,10 +880,10 @@ bool updateAppStatus(const char* variable, const char* value, bool fromUser) {
     if (adBlockOn) LOG_ALT("Ad blocking enabled");
     else LOG_WRN("Ad blocking disabled");
   }
-  else if (!strcmp(variable, "xLedPin")) xLedPin = intVal;
-  else if (!strcmp(variable, "xLedPull")) xLedPull = (bool)intVal;
-  else if (!strcmp(variable, "xLedSimple")) xLedSimple = (bool)intVal;
-  else if (!strcmp(variable, "xledVol")) xledVol = intVal;
+  else if (!strcmp(variable, "lampPin")) lampPin = intVal;
+  else if (!strcmp(variable, "lampActiveHi")) lampActiveHi = (bool)intVal;
+  else if (!strcmp(variable, "lampType")) lampType = intVal;
+  else if (!strcmp(variable, "lampLevel")) lampLevel = intVal;
   return res;
 }
 
@@ -977,7 +903,7 @@ void appSpecificWsHandler(const char* wsMsg) {
     case 'S':
       // status request
       buildJsonString(wsLen); // required config number
-      LOG_SEND("%s\n", jsonBuff);
+      LOG_RAW("%s\n", jsonBuff);
     break;
     case 'U':
       // update or control request
@@ -1077,8 +1003,8 @@ ethRst~-1~3~N~Ethernet Reset pin
 ethSclk~-1~3~N~Ethernet SPI clock pin
 ethMiso~-1~3~N~Ethernet SPI MISO pin
 ethMosi~-1~3~N~Ethernet SPI MOSI pin
-xLedPin~0~1~N~Led status pin (0 off)
-xLedPull~1~1~C~Led Led active on Lo or Hi
-xLedSimple~1~1~C~WS2812 or Simple Led
-xledVol~16~1~N~Led brightness
+lampPin~0~1~N~Led status pin
+lampActiveHi~0~1~C~Led Led active on Lo or Hi
+lampType~0~1~C~Simple or WS2812 Led 
+lampLevel~2~1~R:0:4:1~Led brightness (0 off)
 )~";
