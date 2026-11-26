@@ -4,6 +4,7 @@
 // s60sc 2020, 2023, 2026
 
 #include "appGlobals.h"
+#include <algorithm> // local change: std::sort for bulk blocklist load
 
 const size_t prvtkey_len = 0;
 const size_t cacert_len = 0;
@@ -180,6 +181,72 @@ static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
   } else LOG_ALT("No domain name entered");
 }
 
+/* ── Bulk load (local change) ──────────────────────────
+ * Downloaded domains are appended unsorted after the sorted prefix [0, itemsLoaded),
+ * then sorted + deduplicated once by finalizeBlocklist(). This replaces a sorted insert
+ * per domain, whose memmove of the pointer table in PSRAM made loading O(n^2).
+ * DNS lookups only search the sorted prefix, so they are unaffected while appending. */
+static uint32_t pendingItems = 0; // itemsLoaded + unsorted entries appended by download
+
+static bool appendDomain(const char* domainStr, size_t domLen) {
+  // cheap check for the common case of consecutive duplicates (eg "www.x" then "x")
+  if (pendingItems > itemsLoaded && !strcmp(storage + ptrs[pendingItems - 1], domainStr)) {
+    duplicates++;
+    return true;
+  }
+  if (blocklistSize + domLen + 1 > storageSize || pendingItems >= maxDomains) return false;
+  memcpy(storage + blocklistSize, domainStr, domLen);
+  storage[blocklistSize + domLen] = 0;
+  ptrs[pendingItems++] = blocklistSize;
+  blocklistSize += domLen + 1;
+  return true;
+}
+
+static uint32_t cmpCount = 0;
+static bool domainLess(uint32_t a, uint32_t b) {
+  // yield occasionally so a long sort can't starve other tasks / trip the watchdog
+  if ((++cmpCount & 0x3FFF) == 0) vTaskDelay(1);
+  return strcmp(storage + a, storage + b) < 0;
+}
+
+static void finalizeBlocklist() {
+  // sort all entries, drop duplicates and empty (deleted) names, compact storage
+  uint32_t n = pendingItems;
+  if (n <= itemsLoaded) return; // nothing appended
+  uint32_t t0 = millis();
+  itemsLoaded = 1; // hide list from DNS lookups while it is rebuilt (only "!" sentinel searchable)
+
+  std::sort(ptrs, ptrs + n, domainLess);
+  // deduplicate in place; "!" sentinel sorts first and is never empty
+  uint32_t u = 1;
+  for (uint32_t i = 1; i < n; i++) {
+    const char* cur = storage + ptrs[i];
+    if (!*cur || !strcmp(cur, storage + ptrs[u - 1])) {
+      if (*cur) duplicates++;
+    } else ptrs[u++] = ptrs[i];
+    if ((i & 0xFFF) == 0) vTaskDelay(1);
+  }
+
+  // compact: walk live names in storage order, slide each down over the gaps
+  std::sort(ptrs, ptrs + u);
+  size_t w = 0;
+  for (uint32_t i = 0; i < u; i++) {
+    size_t len = strlen(storage + ptrs[i]) + 1;
+    if (ptrs[i] != w) memmove(storage + w, storage + ptrs[i], len);
+    ptrs[i] = w;
+    w += len;
+    if ((i & 0xFFF) == 0) vTaskDelay(1);
+  }
+  memset(storage + w, 0, blocklistSize - w); // addDomain() relies on zeroed free space
+  blocklistSize = w;
+
+  std::sort(ptrs, ptrs + u, domainLess); // back into name order for binary search
+  ptrs[u] = blocklistSize; // trailing sentinel
+  pendingItems = u;
+  itemsLoaded = u;
+  LOG_INF("Sorted %lu domains in %lu ms", (unsigned long)u, (unsigned long)(millis() - t0));
+}
+
 static void extractBlocklist() {
   // extract domain names from downloaded blocklist file
   char* saveItem = NULL;
@@ -204,9 +271,7 @@ static void extractBlocklist() {
       if (!strcasecmp(tokenItem, "localhost") ||
           !strcasecmp(tokenItem, "localhost.localdomain") ||
           !strcasecmp(tokenItem, "local")) return;
-      uint32_t ptr = binarySearch(tokenItem, true);
-      if (ptr) addDomain(ptr, tokenItem, domLen);
-      else duplicates++;
+      appendDomain(tokenItem, domLen); // capacity is checked by the download loop
     }
   }
 }
@@ -274,46 +339,70 @@ static bool downloadBlockList() {
           WiFiClient* stream = https.getStreamPtr(); // stream data to client
           uint32_t lastRead = millis();
           size_t lineCnt = 0;
+          // local change: read in chunks and split lines here, instead of
+          // readBytesUntil() which does one TLS read call per byte
+          static uint8_t rxBuf[4096]; // static: keep off the task stack
+          size_t lineLen = 0;
+          bool full = false;
+          pendingItems = itemsLoaded; // append after the existing sorted list
 
-          while (https.connected() && (left > 0 || left == -1)) {
-            if (stopLoad) break;
-            if (stream->available()) {
-              size_t lineSize = stream->readBytesUntil('\n', domainLine, maxLineLen);
-              domainLine[lineSize] = 0;
-              lineSize++; // add in count for terminator
-              downloadSize += lineSize;
-              if (left > 0) left -= lineSize;
-              extractBlocklist();
-              if (itemsLoaded >= maxDomains) {
+          // returns false if storage / domain limit reached even after sorting out duplicates
+          auto processLine = [&]() -> bool {
+            domainLine[lineLen] = 0;
+            lineLen = 0;
+            extractBlocklist();
+            if (pendingItems >= maxDomains || storageSize - blocklistSize < maxLineLen) {
+              finalizeBlocklist(); // reclaims space used by duplicates
+              if (pendingItems >= maxDomains) {
                 LOG_ALT("Blocklist truncated as domain limit reached %u", maxDomains);
-                break;
+                return false;
               }
-              if (++lineCnt % 1000 == 0) {
-                // periodically check remaining memory
-                size_t remaining = storageSize - blocklistSize;
-                if (remaining < maxLineLen) {
-                  LOG_ALT("Blocklist truncated to avoid memory overflow, %u bytes remaining\n", remaining);
-                  break;
-                }
-                // show progress
-                if (left > 0) {
-                  float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
-                  LOG_RAW("%0.1f%%\n", loadProg);
-                  sprintf(progStr, "%0.1f%%", loadProg);
-                  updateConfigVect("loadProg", progStr);
-                }
+              if (storageSize - blocklistSize < maxLineLen) {
+                LOG_ALT("Blocklist truncated to avoid memory overflow, %u bytes remaining\n", storageSize - blocklistSize);
+                return false;
+              }
+            }
+            if (++lineCnt % 1000 == 0 && left > 0) {
+              // show progress
+              float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
+              LOG_RAW("%0.1f%%\n", loadProg);
+              sprintf(progStr, "%0.1f%%", loadProg);
+              updateConfigVect("loadProg", progStr);
+            }
+            return true;
+          };
+
+          while (!full && (https.connected() || stream->available()) && (left > 0 || left == -1)) {
+            if (stopLoad) break;
+            int avail = stream->available();
+            if (avail > 0) {
+              int got = stream->read(rxBuf, avail < (int)sizeof(rxBuf) ? avail : sizeof(rxBuf));
+              if (got <= 0) continue;
+              downloadSize += got;
+              if (left > 0) left = (got >= left) ? 0 : left - got;
+              for (int i = 0; i < got && !full; i++) {
+                uint8_t c = rxBuf[i];
+                if (c == '\n') full = !processLine();
+                else if (lineLen < maxLineLen - 1) domainLine[lineLen++] = c; // overlong lines truncated
               }
               lastRead = millis();
             } else if (millis() - lastRead > timeoutVal) {
               // timed out on read
               if (left > 0) LOG_WRN("Timeout on download, %s unread", fmtSize(left));
               break;
-            }
+            } else delay(1); // nothing buffered yet, don't spin
           }
+          if (!full && lineLen) processLine(); // last line without trailing newline
+          finalizeBlocklist();
           ptrs[itemsLoaded] = blocklistSize;
           LOG_INF("Download complete, processed %s in %lu secs", fmtSize(downloadSize), (millis() - loadTime) / 1000);
           LOG_ALT("Loaded %lu blocked domains excluding %lu duplicates, using %s of %s", itemsLoaded - 2, duplicates, fmtSize(blocklistSize), fmtStorageSize);
-          res = true;
+          // local change: a cut-off download (eg wifi drop) must not count as success,
+          // otherwise the partial list replaces the previous one and overwrites the snapshot
+          if (left > 0 && !full && !stopLoad) {
+            LOG_WRN("Download incomplete, %s missing - treated as failed", fmtSize(left));
+            res = false;
+          } else res = true;
         } else LOG_WRN("Unexpected result code %u %s", httpCode, https.errorToString(httpCode).c_str());
       } else LOG_ERR("Connection failed with error: %s", https.errorToString(httpCode).c_str());
     } else {
@@ -724,6 +813,7 @@ static void resetBlocklistStorage() {
   memcpy(storage, "!", 1); // always first so ptrs[0] = 0
   blocklistSize = 2;
   itemsLoaded = 1;
+  duplicates = 0; // local change: don't carry the restored snapshot's count into a rebuild
   addDomain(0, "#", 1);
 }
 

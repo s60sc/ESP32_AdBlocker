@@ -2,6 +2,31 @@
 
 ESP32_AdBlocker acts as a DNS Sinkhole (like [Pi-Hole](https://pi-hole.net/)) by returning 0.0.0.0 for any domain names in its blocklist, else uses an external DNS server to resolve IP addresses. This prevents content being retrieved from or sent to blocked domains. A web server is provided to control the service and monitor its operation.
 
+> **About this fork**
+>
+> This is a modified fork of [s60sc/ESP32_AdBlocker](https://github.com/s60sc/ESP32_AdBlocker) v3.8
+> by [@s60sc](https://github.com/s60sc), with contributions from [@dateno1](https://github.com/dateno1)
+> and others (see below). All credit for the application goes to the original authors.
+> It is distributed under the same [AGPL-3.0 license](LICENSE). Changes in this fork are marked
+> `local change` in the source.
+>
+> Changes compared to upstream v3.8:
+> * **Crash fix:** `STATUS_STACK_SIZE` raised from 4 KB to 12 KB (`appGlobals.h`). The scheduled and retry
+>   blocklist downloads (HTTPS/TLS) and snapshot saves run in `statusCheckTask`. With 4 KB its stack overflowed,
+>   so the device panicked and rebooted during the nightly update.
+> * **Faster blocklist load** (`appSpecific.cpp`): downloaded domains are appended and then sorted, deduplicated
+>   and compacted once (`finalizeBlocklist()`), instead of a sorted insert per domain (O(n²) memory moves in PSRAM).
+>   The download stream is read in 4 KB chunks instead of byte by byte.
+>   On an ESP32-S3 (N16R8) with the default StevenBlack list (2.4 MB, 58k domains), load time dropped from
+>   about 170 s to about 8 s. The resulting blocklist is identical.
+> * **Partial downloads rejected:** a download that ends before its `Content-Length` (for example after a Wi-Fi
+>   drop) now counts as a failure. The previous list, and its flash snapshot, are kept instead of being
+>   replaced by a truncated one.
+> * **`partitions.csv` for 16 MB flash boards:** same app/OTA slots as "8M with spiffs", with LittleFS extended in
+>   place from 1.5 MB to 9.5 MB. That leaves room for the flash snapshot (`useSnap`) as the blocklist grows.
+>   Arduino picks it up automatically from the sketch folder. It only takes effect with a USB upload, and
+>   existing files are kept. **Delete this file if your board has less than 16 MB of flash.**
+
 Version 3.8 includes
 * enhancements to DNS query handling and [LED status](#led-status) by user [@dateno1](https://github.com/dateno1)
 * timezone fix

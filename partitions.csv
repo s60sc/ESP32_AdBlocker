@@ -1,0 +1,10 @@
+# Local partition table for ESP32-S3 N16R8 (16MB flash), picked up automatically by the build.
+# Same as the core's "default_8MB" except LittleFS (spiffs) is extended from 1.5MB to 9.5MB
+# at the same offset, so existing files survive (LittleFS grows on mount).
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x330000,
+app1,     app,  ota_1,   0x340000,0x330000,
+spiffs,   data, spiffs,  0x670000,0x980000,
+coredump, data, coredump,0xFF0000,0x10000,
