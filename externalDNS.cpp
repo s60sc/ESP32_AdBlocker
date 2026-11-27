@@ -17,8 +17,11 @@
 #include <lwip/sockets.h>   // socket/sendto/recvfrom/setsockopt/close
 
 #define DNS_DEFAULT_PORT   53    // listening port (also reply source port)
-//#define CACHE_SIZE         20    // positive-response cache slots (round-robin)
-#define CACHE_SIZE         100    // positive-response cache slots (round-robin) (Each Entry Using 270b SRAM) (Big Cache noticeably cuts repeat-query latency and upstream chatter)
+#if CONFIG_IDF_TARGET_ESP32P4
+#define CACHE_SIZE         1000  // positive-response cache slots in PSRAM (~280KB)
+#else
+#define CACHE_SIZE         100   // positive-response cache slots (round-robin)
+#endif
 #define DEFAULT_TTL        300000 // cache lifetime, ms
 #define MAX_HOSTNAME       256    // longest name we accept from clients
 //#define RESOLVE_TIMEOUT_MS 1500   // per-upstream-server attempt
@@ -53,7 +56,7 @@ int parseDNSname(uint8_t *packet, int offset, char *out, int outSize, int pktLen
 }
 
 /* Core decision engine. Copies header+question into tx, then appends either
- * an A/AAAA answer (blocked/resolved) or nothing (NXDOMAIN/SERVFAIL, RCODE set).
+ * an A/AAAA answer (blocked/resolved) or nothing (NXDOMAIN/NODATA/SERVFAIL).
  * Returns reply length, or 0 to drop silently (malformed query). */
 static int processDNSquery(const uint8_t *rx, int len, uint8_t *tx, int txSize) {
   int offset = sizeof(dns_header_t);
@@ -72,20 +75,44 @@ static int processDNSquery(const uint8_t *rx, int len, uint8_t *tx, int txSize) 
   res->arcount = 0;                           // no OPT/EDNS downstream
   int resp_offset = offset;
 
-  /* Four-state policy:
-   *   BLOCKED  -> sinkhole 0.0.0.0 (A) or :: (AAAA), NODATA for other types
-   *   RESOLVED -> forward upstream address (A); AAAA -> NODATA (IPv4 device)
-   *   NXDOMAIN -> RCODE 3, zero answers (honest "does not exist")
-   *   SERVFAIL -> RCODE 2, zero answers (upstream sick - NEVER cached) */
-  IPAddress ansIP;
-  DnsResult r = checkBlocklist(domain, ansIP);
-  LOG_VRB("Q '%s' type=%u -> %d", domain, qtype, (int)r); 
+  // Normalize query name (lowercase, strip trailing root dot)
+  size_t dlen = strlen(domain);
+  if (dlen > 0 && domain[dlen - 1] == '.') domain[--dlen] = '\0';
+  for (size_t i = 0; i < dlen; i++) domain[i] = (char)tolower((unsigned char)domain[i]);
 
-  if (r == DNS_NXDOMAIN || r == DNS_SERVFAIL) {
-    res->flags = htons(0x8180 | ((r == DNS_NXDOMAIN) ? 0x0003 : 0x0002));
-    res->ancount = htons(0);
+  // RFC 6761: localhost is always loopback, never blocklisted
+  if (!strcmp(domain, "localhost")) {
+    res->flags = htons(0x8180);
+    if (qtype == 0x0001) {
+      res->ancount = htons(1);
+      tx[resp_offset++] = 0xC0; tx[resp_offset++] = 0x0C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x01;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x01;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x00;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x3C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x04;
+      tx[resp_offset++] = 127; tx[resp_offset++] = 0;
+      tx[resp_offset++] = 0;   tx[resp_offset++] = 1;
+    } else if (qtype == 0x001C) {
+      res->ancount = htons(1);
+      tx[resp_offset++] = 0xC0; tx[resp_offset++] = 0x0C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x1C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x01;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x00;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x3C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x10;
+      memset(&tx[resp_offset], 0, 15);
+      tx[resp_offset + 15] = 1;
+      resp_offset += 16;
+    } else {
+      res->ancount = htons(0);
+    }
+    return (resp_offset > txSize) ? 0 : resp_offset;
   }
-  else if (r == DNS_BLOCKED) {
+
+  /* Check blocklist first without performing an unnecessary upstream A lookup */
+  if (isDomainBlocked(domain)) {
+    LOG_VRB("Q '%s' type=%u -> %d", domain, qtype, (int)DNS_BLOCKED);
     res->flags = htons(0x8180);
     if (qtype == 0x0001) {                    // A -> 0.0.0.0
       res->ancount = htons(1);
@@ -110,9 +137,14 @@ static int processDNSquery(const uint8_t *rx, int len, uint8_t *tx, int txSize) 
     } else {                                  // blocked, exotic type -> NODATA
       res->ancount = htons(0);
     }
-  }
-    else {                                        // DNS_RESOLVED
-    if (qtype == 0x0001) {                      // A: unchanged, uses ansIP
+  } else if (qtype == 0x0001) {               // A query -> resolve upstream A
+    IPAddress ansIP;
+    DnsResult r = resolveDomainStatus(domain, ansIP);
+    LOG_VRB("Q '%s' type=%u -> %d", domain, qtype, (int)r);
+    if (r == DNS_NXDOMAIN || r == DNS_SERVFAIL) {
+      res->flags = htons(0x8180 | ((r == DNS_NXDOMAIN) ? 0x0003 : 0x0002));
+      res->ancount = htons(0);
+    } else if (r == DNS_RESOLVED) {
       res->flags = htons(0x8180);
       res->ancount = htons(1);
       tx[resp_offset++] = 0xC0; tx[resp_offset++] = 0x0C;
@@ -123,34 +155,31 @@ static int processDNSquery(const uint8_t *rx, int len, uint8_t *tx, int txSize) 
       tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x04;
       tx[resp_offset++] = ansIP[0]; tx[resp_offset++] = ansIP[1];
       tx[resp_offset++] = ansIP[2]; tx[resp_offset++] = ansIP[3];
-    } else if (qtype == 0x001C) {               // AAAA: real resolution now
-      uint8_t a6[16];
-      bool have = false;
-      if (!strcmp(domain, "localhost")) {       // RFC 6761 companion rule
-        memset(a6, 0, 16); a6[15] = 1;          // ::1
-        have = true;
-      } else {
-        have = resolveAAAA(domain, a6);         // false => NODATA (client uses A)
-      }
-      if (have) {
-        res->flags = htons(0x8180);             // QR=1: without it the reply keeps the query flags
-        res->ancount = htons(1);
-        tx[resp_offset++] = 0xC0; tx[resp_offset++] = 0x0C;
-        tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x1C;
-        tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x01;
-        tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x00;
-        tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x3C;
-        tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x10;
-        memcpy(&tx[resp_offset], a6, 16);
-        resp_offset += 16;
-      } else {
-        res->flags = htons(0x8180);
-        res->ancount = htons(0);
-      }
-    } else {                                    // other types -> NODATA
+    } else {                                  // DNS_NODATA
       res->flags = htons(0x8180);
       res->ancount = htons(0);
     }
+  } else if (qtype == 0x001C) {               // AAAA query -> resolve upstream AAAA directly
+    uint8_t a6[16];
+    bool have = resolveAAAA(domain, a6);
+    LOG_VRB("Q '%s' type=%u -> %d", domain, qtype, have ? (int)DNS_RESOLVED : (int)DNS_NODATA);
+    res->flags = htons(0x8180);
+    if (have) {
+      res->ancount = htons(1);
+      tx[resp_offset++] = 0xC0; tx[resp_offset++] = 0x0C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x1C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x01;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x00;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x3C;
+      tx[resp_offset++] = 0x00; tx[resp_offset++] = 0x10;
+      memcpy(&tx[resp_offset], a6, 16);
+      resp_offset += 16;
+    } else {
+      res->ancount = htons(0);
+    }
+  } else {                                    // other types -> NODATA without upstream A lookup
+    res->flags = htons(0x8180);
+    res->ancount = htons(0);
   }
 
   if (resp_offset > txSize) return 0;
@@ -177,7 +206,34 @@ static void dnsTask(void *parameter) {
   }
 }
 
+/************************ DNS Forwarder **************************/
+
+/* Family-tagged positive cache: fam 1 = A (4B), 28 = AAAA (16B).
+ * Negative results are never cached (fast recovery after WAN outage). */
+struct CacheEntry {
+  char hostname[MAX_HOSTNAME];
+  uint8_t fam;                                // 1 or 28
+  uint8_t addr[16];                           // 4 or 16 bytes used
+  uint32_t expiry;
+};
+
+#if CONFIG_IDF_TARGET_ESP32P4
+static CacheEntry* dnsCache = nullptr;
+static bool ensureDnsCache() {
+  if (!dnsCache) {
+    dnsCache = (CacheEntry*)ps_calloc(CACHE_SIZE, sizeof(CacheEntry));
+    if (!dnsCache) dnsCache = (CacheEntry*)calloc(CACHE_SIZE, sizeof(CacheEntry));
+    if (dnsCache) LOG_INF("DNS cache allocated: %d entries (%s)", CACHE_SIZE, fmtSize(CACHE_SIZE * sizeof(CacheEntry)));
+  }
+  return dnsCache != nullptr;
+}
+#else
+static CacheEntry dnsCache[CACHE_SIZE];
+static inline bool ensureDnsCache() { return true; }
+#endif
+
 void prepDNS() {
+  ensureDnsCache();
   dnsSock = socket(AF_INET, SOCK_DGRAM, 0);
   if (dnsSock < 0) {
     snprintf(startupFailure, SF_LEN, STARTUP_FAIL "DNS socket not created");
@@ -204,21 +260,8 @@ void prepDNS() {
   LOG_INF("AdBlocker DNS Server started on %s:%d", formatIPstr(), DNS_DEFAULT_PORT);
 }
 
-/************************ DNS Forwarder **************************/
-
-/* Tiny positive-only cache. Negative results (NXDOMAIN/SERVFAIL) are never
- * cached so recovery after a WAN outage is immediate. */
-/* Family-tagged positive cache: fam 1 = A (4B), 28 = AAAA (16B).
- * Negative results are never cached (fast recovery after WAN outage). */
-struct CacheEntry {
-  char hostname[MAX_HOSTNAME] = {0};
-  uint8_t fam;                                // 1 or 28
-  uint8_t addr[16];                           // 4 or 16 bytes used
-  uint32_t expiry;
-};
-static CacheEntry dnsCache[CACHE_SIZE];
-
 static bool cacheGet(const char* host, uint8_t fam, uint8_t* addr) {
+  if (!ensureDnsCache()) return false;
   uint32_t now = millis();
   for (int i = 0; i < CACHE_SIZE; i++) {
     if (dnsCache[i].hostname[0] && dnsCache[i].fam == fam &&
@@ -231,6 +274,7 @@ static bool cacheGet(const char* host, uint8_t fam, uint8_t* addr) {
 }
 
 static void cachePut(const char* host, uint8_t fam, const uint8_t* addr) {
+  if (!ensureDnsCache()) return;
   static int ci = 0;
   strncpy(dnsCache[ci].hostname, host, MAX_HOSTNAME - 1);
   dnsCache[ci].hostname[MAX_HOSTNAME - 1] = 0;
@@ -299,7 +343,7 @@ static DnsResult queryUpstream(const char* host, uint16_t qtype,
     dst.sin_port = htons(DNS_DEFAULT_PORT);
     dst.sin_addr.s_addr = srv;
 
-        if (sendto(fd, qbuf, pos, 0, (struct sockaddr*)&dst, sizeof(dst)) == (ssize_t)pos) {
+    if (sendto(fd, qbuf, pos, 0, (struct sockaddr*)&dst, sizeof(dst)) == (ssize_t)pos) {
       struct sockaddr_in from;
       socklen_t fl = sizeof(from);
       ssize_t rxLen = recvfrom(fd, rbuf, sizeof(rbuf), 0, (struct sockaddr*)&from, &fl);
@@ -333,7 +377,7 @@ static DnsResult queryUpstream(const char* host, uint16_t qtype,
             }
             q += rdl;                          // CNAME/others: skip, keep scanning
           }
-          if (res != DNS_RESOLVED) res = DNS_NXDOMAIN;   // NODATA ~= NXDOMAIN
+          if (res != DNS_RESOLVED) res = DNS_NODATA;           // RCODE 0 with 0 matching answers
         }
         haveAnswer = true;                     // definitive reply - stop failover
       }

@@ -4,6 +4,7 @@
 // s60sc 2020, 2023, 2026
 
 #include "appGlobals.h"
+#include <algorithm>
 
 const size_t prvtkey_len = 0;
 const size_t cacert_len = 0;
@@ -25,10 +26,20 @@ static bool stopLoad = false;
 static bool downloading = false;
 static bool adBlockOn = true; // whether app is set to block or not by user
 static bool useSnap = false; // whether flash is used to store snapshot
+static volatile bool blocklistReady = false; // false while rebuilding/sorting ptrs[]
+static SemaphoreHandle_t blMutex = NULL;
+static char lastBlockedDomain[IN_FILE_NAME_LEN] = {0};
 size_t storageSize;
 uint32_t* ptrs; // ordered pointers to domain names
 char* storage; // linear domain name storage
 static uint32_t lastLoadMs = 0; // millis() of last successful blocklist download
+
+static inline void blLock() {
+  if (blMutex) xSemaphoreTake(blMutex, portMAX_DELAY);
+}
+static inline void blUnlock() {
+  if (blMutex) xSemaphoreGive(blMutex);
+}
 
 /* Custom CA cache - kept for process lifetime, lives in PSRAM when
  * possible so even a multi-KB CA.pem never squeezes internal SRAM. */
@@ -79,6 +90,7 @@ static void addDomain(uint32_t ptr, const char* domainStr, size_t domLen) {
   int diff = strcmp(storage + ptrs[ptr], domainStr);
   // append domain name to storage
   memcpy(storage + blocklistSize, domainStr, domLen);
+  storage[blocklistSize + domLen] = 0;
   // make space for new domain pointer at identified location by shifting following locations
   if (diff < 0) ptr++; // to insert after
   memmove(&ptrs[ptr + 1], &ptrs[ptr], (itemsLoaded - ptr) * sizeof(uint32_t));
@@ -87,6 +99,45 @@ static void addDomain(uint32_t ptr, const char* domainStr, size_t domLen) {
   ptrs[ptr] = blocklistSize; // points to latest domain name in 'storage'
   blocklistSize += domLen + 1; // add terminator
   itemsLoaded++;
+}
+
+static void appendDomainUnsorted(const char* domainStr, size_t domLen) {
+  // O(1) append used during bulk download; finalized by finalizeBlocklist() in O(N log N)
+  if (blocklistSize + domLen + 1 > storageSize || itemsLoaded >= maxDomains) {
+    LOG_VRB("Ignored '%s', blocklist storage/limit reached", domainStr);
+    return;
+  }
+  memcpy(storage + blocklistSize, domainStr, domLen);
+  storage[blocklistSize + domLen] = 0;
+  ptrs[itemsLoaded++] = blocklistSize;
+  blocklistSize += domLen + 1;
+}
+
+static void finalizeBlocklist() {
+  // Sort pointer table in O(N log N) and deduplicate in-place in O(N)
+  uint32_t t0 = millis();
+  vTaskDelay(1);
+  if (itemsLoaded > 1) {
+    std::sort(ptrs, ptrs + itemsLoaded, [](uint32_t a, uint32_t b) {
+      return strcmp(storage + a, storage + b) < 0;
+    });
+    uint32_t writeIdx = 0;
+    for (uint32_t i = 0; i < itemsLoaded; i++) {
+      if (writeIdx > 0 && strcmp(storage + ptrs[writeIdx - 1], storage + ptrs[i]) == 0) {
+        duplicates++;
+      } else {
+        ptrs[writeIdx++] = ptrs[i];
+      }
+    }
+    itemsLoaded = writeIdx;
+  }
+  ptrs[itemsLoaded] = blocklistSize;
+  vTaskDelay(1);
+  blLock();
+  lastBlockedDomain[0] = 0;
+  blocklistReady = true;
+  blUnlock();
+  LOG_INF("Sorted & deduplicated %lu domains in %lums", itemsLoaded > 2 ? itemsLoaded - 2 : 0, millis() - t0);
 }
 
 static bool updateCustomFile(char* domainName, bool doDelete) {
@@ -101,19 +152,12 @@ static bool updateCustomFile(char* domainName, bool doDelete) {
   return false;
 }
 
-DnsResult checkBlocklist(const char* domainName, IPAddress& retIP) {
-  // called from externalDNS.cpp
-  // normalise the query, test blocklist, return response type + answer IP
-  // normalize: strip single trailing root dot, force lowercase
-  // (DNS names are case-insensitive; blocklist storage is lowercase)
-
-  // use IN_FILE_NAME_LEN (128) so names up to maxDomLen (100) + dot fit
+bool isDomainBlocked(const char* domainName) {
+  // normalize: strip trailing root dot, force lowercase, strip leading "www."
+  // (matches formatDomain() used when populating the blocklist)
   char normName[IN_FILE_NAME_LEN];
   size_t n = strlen(domainName);
-  if (n == 0 || n >= IN_FILE_NAME_LEN) {
-    retIP = IPAddress(0, 0, 0, 0);
-    return DNS_SERVFAIL;
-  }
+  if (n == 0 || n >= IN_FILE_NAME_LEN) return false;
 
   if (domainName[n - 1] == '.') n--; // tolerate "example.com."
   for (size_t i = 0; i < n; i++)
@@ -122,28 +166,55 @@ DnsResult checkBlocklist(const char* domainName, IPAddress& retIP) {
 
   // RFC 6761: localhost is always loopback, never blocklisted
   if (!strcmp(normName, "localhost")) {
-    retIP = IPAddress(127, 0, 0, 1);
     ++allowCnt;
     LOG_VRB("%s -> loopback (fixed)", normName);
-    return DNS_RESOLVED;
+    return false;
   }
+
+  // Strip leading "www." so "www.ads.example" matches stored "ads.example"
+  const char* lookupName = (strncmp(normName, "www.", 4) == 0) ? normName + 4 : normName;
 
   bool blocked = false;
   if (adBlockOn) {
-    static char blockedDomain[IN_FILE_NAME_LEN] = {0};
     uint64_t usElapsed = micros();
-    // check if received domain name same as previous blocked domain to skip search
-    blocked = !strcmp(normName, blockedDomain) ? true : (bool)binarySearch(normName, false);
-    if (blocked) strcpy(blockedDomain, normName);
+    blLock();
+    if (blocklistReady && itemsLoaded > 2) {
+      // check if received domain name same as previous blocked domain to skip search
+      blocked = (lastBlockedDomain[0] && !strcmp(lookupName, lastBlockedDomain))
+                ? true
+                : (bool)binarySearch(lookupName, false);
+      if (blocked) strlcpy(lastBlockedDomain, lookupName, sizeof(lastBlockedDomain));
+    }
+    blUnlock();
     blocked ? ++blockCnt : ++allowCnt;
     uint64_t checkTime = micros() - usElapsed;
     LOG_VRB("Check %s %s in %lluus", normName, (blocked) ? "*Blocked*" : "Allowed", checkTime);
   }
-  if (blocked) {
-    retIP = IPAddress(0, 0, 0, 0); // sinkhole only for blocklist hits
+  return blocked;
+}
+
+DnsResult checkBlocklist(const char* domainName, IPAddress& retIP) {
+  // legacy wrapper: check blocklist, else query upstream A forwarder
+  char normName[IN_FILE_NAME_LEN];
+  size_t n = strlen(domainName);
+  if (n == 0 || n >= IN_FILE_NAME_LEN) {
+    retIP = IPAddress(0, 0, 0, 0);
+    return DNS_SERVFAIL;
+  }
+  if (domainName[n - 1] == '.') n--;
+  for (size_t i = 0; i < n; i++)
+    normName[i] = (char)tolower((unsigned char)domainName[i]);
+  normName[n] = 0;
+
+  if (!strcmp(normName, "localhost")) {
+    retIP = IPAddress(127, 0, 0, 1);
+    ++allowCnt;
+    return DNS_RESOLVED;
+  }
+  if (isDomainBlocked(normName)) {
+    retIP = IPAddress(0, 0, 0, 0);
     return DNS_BLOCKED;
   }
-  // not in blocklist -> query forwarder, distinguishing NXDOMAIN from SERVFAIL
   return resolveDomainStatus(normName, retIP);
 }
 
@@ -155,23 +226,33 @@ static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
 
   if (size_t domLen = formatDomain(domName); domLen > 0) {
     if (domLen >= maxDomLen) LOG_ALT("Domain name %s is too long to process", domName);
+    else if (!blocklistReady) LOG_ALT("Blocklist reload in progress, try again shortly");
     else {
-      uint32_t blPtr = binarySearch(domName, doUpdate);
       if (doUpdate) { // addition
+        blLock();
+        uint32_t blPtr = binarySearch(domName, true);
+        blUnlock();
         if (blPtr) {
-          // not found, so insert domain if resolves at blPtr location
+          // resolve outside lock to avoid blocking DNS queries during network I/O
           if (resolveDomain(domName) != IPAddress(0, 0, 0, 0)) {
-            // resolved
-            addDomain(blPtr, domName, domLen);
+            blLock();
+            blPtr = binarySearch(domName, true);
+            if (blPtr) addDomain(blPtr, domName, domLen);
+            blUnlock();
             if (updateCustomFile(domName, false)) LOG_ALT("Domain name %s IS added to blocklist", domName);
           } else LOG_ALT("Domain name %s NOT added to blocklist as not resolved", domName);
         } else LOG_ALT("Domain name %s NOT added to blocklist as duplicate", domName);
       } else {
         // delete or just check
+        blLock();
+        uint32_t blPtr = binarySearch(domName, false);
+        if (doDelete && blPtr) {
+          *(storage + ptrs[blPtr]) = 0; // set domain name empty
+          lastBlockedDomain[0] = 0;     // invalidate single-entry cache
+        }
+        blUnlock();
         if (doDelete) { // deletion
           if (blPtr) {
-            // found, so delete
-            *(storage + ptrs[blPtr]) = 0; // set domain name empty
             if (updateCustomFile(domName, true)) LOG_ALT("Domain name %s IS deleted", domName);
           } else LOG_ALT("Domain name %s NOT deleted as not in blocklist", domName);
         } else LOG_ALT("Domain name %s %s in blocklist", domName, blPtr ? "IS" : "NOT"); // check only
@@ -197,16 +278,14 @@ static void extractBlocklist() {
   }
   
   if (tokenItem != NULL) {
-    // write processed domain to storage
+    // write processed domain to storage (sorted & deduplicated once download completes)
     size_t domLen = formatDomain(tokenItem);
     if (domLen && (domLen < maxDomLen)) {
       // never store loopback names from hosts file headers
       if (!strcasecmp(tokenItem, "localhost") ||
           !strcasecmp(tokenItem, "localhost.localdomain") ||
           !strcasecmp(tokenItem, "local")) return;
-      uint32_t ptr = binarySearch(tokenItem, true);
-      if (ptr) addDomain(ptr, tokenItem, domLen);
-      else duplicates++;
+      appendDomainUnsorted(tokenItem, domLen);
     }
   }
 }
@@ -275,10 +354,14 @@ static bool downloadBlockList() {
           uint32_t lastRead = millis();
           size_t lineCnt = 0;
 
+          blLock();
+          blocklistReady = false;
+          blUnlock();
+
           while (https.connected() && (left > 0 || left == -1)) {
             if (stopLoad) break;
             if (stream->available()) {
-              size_t lineSize = stream->readBytesUntil('\n', domainLine, maxLineLen);
+              size_t lineSize = stream->readBytesUntil('\n', domainLine, maxLineLen - 1);
               domainLine[lineSize] = 0;
               lineSize++; // add in count for terminator
               downloadSize += lineSize;
@@ -310,9 +393,9 @@ static bool downloadBlockList() {
               break;
             }
           }
-          ptrs[itemsLoaded] = blocklistSize;
+          finalizeBlocklist();
           LOG_INF("Download complete, processed %s in %lu secs", fmtSize(downloadSize), (millis() - loadTime) / 1000);
-          LOG_ALT("Loaded %lu blocked domains excluding %lu duplicates, using %s of %s", itemsLoaded - 2, duplicates, fmtSize(blocklistSize), fmtStorageSize);
+          LOG_ALT("Loaded %lu blocked domains excluding %lu duplicates, using %s of %s", itemsLoaded > 2 ? itemsLoaded - 2 : 0, duplicates, fmtSize(blocklistSize), fmtStorageSize);
           res = true;
         } else LOG_WRN("Unexpected result code %u %s", httpCode, https.errorToString(httpCode).c_str());
       } else LOG_ERR("Connection failed with error: %s", https.errorToString(httpCode).c_str());
@@ -337,7 +420,7 @@ static bool downloadBlockList() {
 static void loadCustom() {
   // process custom blocklist file entries
   File file;
-  static uint32_t customAdded = 0, customDeleted = 0;
+  uint32_t customAdded = 0, customDeleted = 0;
   if (!STORAGE.exists(CUSTOM_FILE_PATH)) {
     // create file on first call
     file = STORAGE.open(CUSTOM_FILE_PATH, FILE_WRITE);
@@ -354,8 +437,9 @@ static void loadCustom() {
       if (customLineStr.length()) {
         if (customLineStr.charAt(0) == '#') {
           doAdd = false;  // deletion
-          strcpy(domName, customLineStr.substring(1).c_str());
-        } else strcpy(domName, customLineStr.c_str()); // addition
+          strlcpy(domName, customLineStr.substring(1).c_str(), sizeof(domName));
+        } else strlcpy(domName, customLineStr.c_str(), sizeof(domName)); // addition
+        blLock();
         uint32_t blPtr = binarySearch(domName, doAdd);
         if (blPtr) {
           if (doAdd) {
@@ -365,9 +449,11 @@ static void loadCustom() {
           } else {
             // deletion
             *(storage + ptrs[blPtr]) = 0; // set domain name empty
+            lastBlockedDomain[0] = 0;
             customDeleted++;
           }
         } else LOG_WRN("Ignored custom %s of %s", doAdd ? "addition" : "deletion", domName);
+        blUnlock();
       }
     }
     file.close();
@@ -435,12 +521,24 @@ static void saveSnapshot() {
   uint32_t nameBytes  = 0;
   uint32_t matchBytes = 0;
 
+  // Compute exact packed arena size expected by loadSnapshot() (accounts for deduped/deleted entries)
+  uint32_t packedBlSize = 0;
+  for (uint32_t i = 0; i < itemsLoaded; i++) {
+    size_t maxCur = blocklistSize - ptrs[i];
+    size_t cl = strnlen(storage + ptrs[i], maxCur);
+    if (cl >= maxCur) {
+      LOG_ERR("Snap: entry %u UNTERMINATED at offset %u", (unsigned)i, (unsigned)ptrs[i]);
+      return;
+    }
+    packedBlSize += cl + 1;
+  }
+
   SnapHdr h; 
   memset(&h, 0, sizeof(h));
   h.magic = SNAP_MAGIC; 
   h.ver = SNAP_VER;
   h.items = itemsLoaded; 
-  h.blsize = blocklistSize;
+  h.blsize = packedBlSize;
   h.blockCnt = blockCnt; 
   h.allowCnt = allowCnt; 
   h.duplicates = duplicates;
@@ -621,6 +719,11 @@ static bool loadSnapshot() {
               (unsigned long)(h.blsize / 1024), (unsigned long)(storageSize / 1024));
   }
 
+  blLock();
+  blocklistReady = false;
+  lastBlockedDomain[0] = 0;
+  blUnlock();
+
   memset(ptrs, 0, (maxDomains + 2) * sizeof(uint32_t));
   uint32_t crc = crc32_begin();
   uint32_t pos = 0, idx = 0, enc = 0;
@@ -702,6 +805,7 @@ static bool loadSnapshot() {
     return false;
   }
   
+  blLock();
   ptrs[idx] = pos;                              // trailing sentinel
   blocklistSize = h.blsize;  
   itemsLoaded = h.items;
@@ -710,6 +814,9 @@ static bool loadSnapshot() {
   duplicates = h.duplicates;
   lastLoadMs = millis();
   startupFailure[0] = 0;
+  lastBlockedDomain[0] = 0;
+  blocklistReady = true;
+  blUnlock();
   
   LOG_ALT("Restored %lu domains (%s) from snapshot", (unsigned long)(itemsLoaded - 2), fmtSize(blocklistSize));
   return true;
@@ -718,6 +825,9 @@ static bool loadSnapshot() {
 /* Reset storage to the primed ("!" + "#") state so a retry never inherits
  * partial data from an interrupted download (dedupe counts, truncation). */
 static void resetBlocklistStorage() {
+  blLock();
+  blocklistReady = false;
+  lastBlockedDomain[0] = 0;
   memset(ptrs, 0, (maxDomains + 2) * sizeof(uint32_t));
   memset(storage, 0, storageSize);  // ← FULL WIPE (was: maxDomLen + 8)
   // prime domain storage for binary search to prevent pointer 0 being returned
@@ -725,6 +835,8 @@ static void resetBlocklistStorage() {
   blocklistSize = 2;
   itemsLoaded = 1;
   addDomain(0, "#", 1);
+  blocklistReady = true;
+  blUnlock();
 }
 
 static bool loadBlockList(const char* reason) {
@@ -797,6 +909,7 @@ static bool loadBlockList(const char* reason) {
 }
 
 bool appSetup() {
+  if (!blMutex) blMutex = xSemaphoreCreateMutex();
   while (!strlen(fileURL)) {
     LOG_ALT("Enter blocklist URL on web page ...");
     delay(30000); // wait for file URL to be entered

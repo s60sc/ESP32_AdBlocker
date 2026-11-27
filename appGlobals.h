@@ -126,11 +126,13 @@ enum DnsResult : uint8_t {
   DNS_BLOCKED  = 0,  // name matched blocklist        -> reply A 0.0.0.0
   DNS_RESOLVED = 1,  // upstream returned an address  -> reply A <ip>
   DNS_NXDOMAIN = 2,  // upstream RCODE 3 (no name)    -> reply RCODE 3
-  DNS_SERVFAIL = 3   // timeout / RCODE 2,4,5         -> reply RCODE 2
+  DNS_SERVFAIL = 3,  // timeout / RCODE 2,4,5         -> reply RCODE 2
+  DNS_NODATA   = 4   // upstream RCODE 0, 0 answers   -> reply RCODE 0, ancount 0
 };
 
+bool isDomainBlocked(const char* domainName); // Normalizes name (incl. www.) and checks blocklist (thread-safe)
 DnsResult checkBlocklist(const char* domainName, IPAddress& retIP); // Returns BLOCKED (retIP=0.0.0.0) or RESOLVED (not in list)
-DnsResult resolveDomainStatus(const char* domainName, IPAddress& retIP); // Upstream UDP resolve with cache/failover: RESOLVED, NXDOMAIN, or SERVFAIL
+DnsResult resolveDomainStatus(const char* domainName, IPAddress& retIP); // Upstream UDP resolve with cache/failover: RESOLVED, NXDOMAIN, NODATA, or SERVFAIL
 IPAddress resolveDomain(const char* domainName); // Legacy wrapper: returns IP or 0.0.0.0 on any failure
 
 /******************** Global app declarations *******************/

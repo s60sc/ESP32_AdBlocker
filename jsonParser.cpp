@@ -16,7 +16,9 @@ struct Slice {
     size_t len;
 };
 
-static Slice extractNestedValue(const char* obj, size_t len, const char* nestedKey, size_t nestedKeyLen);
+#define JSON_MAX_DEPTH 16
+
+static Slice extractNestedValue(const char* obj, size_t len, const char* nestedKey, size_t nestedKeyLen, int depth);
 
 static inline void skipWhitespace(const char*& p, const char* end) {
   while (p < end && isspace(static_cast<unsigned char>(*p))) p++;
@@ -27,7 +29,7 @@ static Slice parseString(const char*& p, const char* end) {
   p++; // skip opening quote
   const char* start = p;
   while (p < end) {
-    if (*p == '\\') p += 2; // skip escaped char
+    if (*p == '\\') p += (p + 1 < end) ? 2 : 1; // skip escaped char safely
     else if (*p == '"') {
       size_t len = p - start;
       p++; // skip closing quote
@@ -81,18 +83,14 @@ static Slice parseValue(const char*& p, const char* end) {
     skipValue(p, end);
     return {start, size_t(p - start)};
   }
-  // Number, boolean, null - trim whitespace
-  while (p < end && *p != ',' && *p != '}' &&*p != ']' && !isspace(static_cast<unsigned char>(*p))) p++;
-
-  // Trim trailing whitespace
-  const char* finish = p;
-  while (finish > start && isspace(static_cast<unsigned char>(*(finish - 1)))) finish--;
-  
-  return {start, size_t(finish - start)};
+  // Number, boolean, null
+  while (p < end && *p != ',' && *p != '}' && *p != ']' && !isspace(static_cast<unsigned char>(*p))) p++;
+  return {start, size_t(p - start)};
 }
 
-static Slice findNthOccurrence(const char*& p, const char* end, const char* key, size_t keyLen, int& occurrence, int targetOccurrence, bool extractNested, const char* nestedKey, size_t nestedKeyLen) {
+static Slice findNthOccurrence(const char*& p, const char* end, const char* key, size_t keyLen, int& occurrence, int targetOccurrence, bool extractNested, const char* nestedKey, size_t nestedKeyLen, int depth = 0) {
   // Recursively search through entire JSON structure for nth occurrence
+  if (depth > JSON_MAX_DEPTH) return {nullptr, 0};
   skipWhitespace(p, end);
   if (p >= end) return {nullptr, 0};
 
@@ -104,22 +102,24 @@ static Slice findNthOccurrence(const char*& p, const char* end, const char* key,
       if (*p == '}') { p++; break; }
 
       Slice k = parseString(p, end);
+      if (!k.ptr) return {nullptr, 0};
       skipWhitespace(p, end);
       if (p >= end || *p != ':') return {nullptr, 0};
       p++;
       skipWhitespace(p, end);
+      if (p >= end) return {nullptr, 0};
 
       bool match = (k.len == keyLen && memcmp(k.ptr, key, keyLen) == 0);
       if (match) {
         occurrence++;
         if (occurrence == targetOccurrence) {
           Slice v = parseValue(p, end);
-          if (extractNested && v.ptr && v.len && *v.ptr == '{') return extractNestedValue(v.ptr, v.len, nestedKey, nestedKeyLen);
+          if (extractNested && v.ptr && v.len && *v.ptr == '{') return extractNestedValue(v.ptr, v.len, nestedKey, nestedKeyLen, depth + 1);
           return v;
         } else skipValue(p, end);
       } else {
         if (*p == '{' || *p == '[') {
-          Slice r = findNthOccurrence(p, end, key, keyLen, occurrence, targetOccurrence, extractNested, nestedKey, nestedKeyLen);
+          Slice r = findNthOccurrence(p, end, key, keyLen, occurrence, targetOccurrence, extractNested, nestedKey, nestedKeyLen, depth + 1);
           if (r.ptr) return r;
         } else skipValue(p, end);
       }
@@ -137,7 +137,7 @@ static Slice findNthOccurrence(const char*& p, const char* end, const char* key,
       if (p >= end) break;
       if (*p == ']') { p++; break; }
       if (*p == '{' || *p == '[') {
-        Slice r = findNthOccurrence(p, end, key, keyLen, occurrence, targetOccurrence, extractNested, nestedKey, nestedKeyLen);
+        Slice r = findNthOccurrence(p, end, key, keyLen, occurrence, targetOccurrence, extractNested, nestedKey, nestedKeyLen, depth + 1);
         if (r.ptr) return r;
       } else skipValue(p, end);
       skipWhitespace(p, end);
@@ -148,17 +148,17 @@ static Slice findNthOccurrence(const char*& p, const char* end, const char* key,
   return {nullptr, 0};
 }
 
-static Slice extractNestedValue(const char* obj, size_t len, const char* nestedKey, size_t nestedKeyLen) {
+static Slice extractNestedValue(const char* obj, size_t len, const char* nestedKey, size_t nestedKeyLen, int depth) {
   const char* p = obj;
   const char* end = obj + len;
   int count = 0;
-  return findNthOccurrence(p, end, nestedKey, nestedKeyLen, count, 1, false, nullptr, 0);
+  return findNthOccurrence(p, end, nestedKey, nestedKeyLen, count, 1, false, nullptr, 0, depth);
 }
 
-bool getJsonValue(const char* json, const char* key, char* value, const char* nestedKey, int occurrence) {
+bool getJsonValue(const char* json, const char* key, char* value, const char* nestedKey, int occurrence, size_t valueSize) {
   // Returns nth occurrence (1-indexed, default is 1)
   // If nestedKey is provided, extracts that field from the object value
-  if (!json || !key || !value) return false;
+  if (!json || !key || !value || valueSize == 0) return false;
 
   const char* p = json;
   const char* end = json + strlen(json);
@@ -166,14 +166,14 @@ bool getJsonValue(const char* json, const char* key, char* value, const char* ne
   size_t nestedKeyLen = nestedKey ? strlen(nestedKey) : 0;
   if (occurrence < 1) occurrence = 1;
   int count = 0;
-  Slice result = findNthOccurrence(p, end, key, keyLen, count, occurrence, nestedKey && nestedKey[0], nestedKey, nestedKeyLen);
+  Slice result = findNthOccurrence(p, end, key, keyLen, count, occurrence, nestedKey && nestedKey[0], nestedKey, nestedKeyLen, 0);
 
   if (!result.ptr) {
     value[0] = '\0';
     return false;
   }
 
-  size_t len = min(result.len, size_t(FILE_NAME_LEN - 1));
+  size_t len = min(result.len, valueSize - 1);
   memcpy(value, result.ptr, len);
   value[len] = '\0';
   return true;

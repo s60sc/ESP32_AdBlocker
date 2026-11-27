@@ -178,7 +178,7 @@ bool handleWebDav(httpd_req_t* rreq);
 void initStatus(int cfgGroup, int delayVal);
 bool isPathTraversal(const char* path);
 void killSocket(int skt = -99);
-bool getJsonValue(const char* json, const char* key, char* value, const char* nestedKey = nullptr, int occurrence = 1);
+bool getJsonValue(const char* json, const char* key, char* value, const char* nestedKey = nullptr, int occurrence = 1, size_t valueSize = FILE_NAME_LEN);
 void listBuff(const uint8_t* b, size_t len); 
 bool listDir(const char* fname, char* jsonBuff, size_t jsonBuffLen, const char* extension);
 void loadCerts();

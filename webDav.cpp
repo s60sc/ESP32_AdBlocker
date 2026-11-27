@@ -59,16 +59,16 @@
 static char pathName[IN_FILE_NAME_LEN];
 static httpd_req_t* req;
 static char formattedTime[80];
-static const char* extensions[] = {"dummy", ".htm", ".css", ".txt", ".js", ".json", ".png", ".gif", ".jpg", ".ico", ".svg", ".xml", ".pdf", ".zip", ".gz"};
-static const char* mimeTypes[] = {"application/octet-stream", "text/html", "text/html", "text/css", "text/plain", "application/javascript", "application/json", "image/png", "image/gif", "image/jpeg", "image/x-icon", "image/svg+xml", "text/xml", "application/pdf", "application/zip", "application/x-gzip"};
+static const char* extensions[] = {".htm", ".css", ".txt", ".js", ".json", ".png", ".gif", ".jpg", ".ico", ".svg", ".xml", ".pdf", ".zip", ".gz"};
+static const char* mimeTypes[] = {"application/octet-stream", "text/html", "text/css", "text/plain", "application/javascript", "application/json", "image/png", "image/gif", "image/jpeg", "image/x-icon", "image/svg+xml", "text/xml", "application/pdf", "application/zip", "application/x-gzip"};
 
 static int getMimeType(const char* path) {
-  // determine mime type for give file extension
+  // determine mime type for given file extension
   int mimePtr = 1;
   size_t len = strlen(path);
   for (const char* ext : extensions) {
     size_t slen = strlen(ext);
-    if (!strncmp(path + len - slen, ext, slen)) return mimePtr;
+    if (len >= slen && !strncmp(path + len - slen, ext, slen)) return mimePtr;
     mimePtr++;
   }
   return 0; // default mime type
@@ -139,13 +139,14 @@ static void sendPropResponse(File& file, const char* payload) {
   httpd_resp_sendstr_chunk(req, XML4);
 }
 
-static bool getPayload(char* payload) {
+static bool getPayload(char* payload, size_t maxLen) {
   // get payload in PROPFIND message
-  int bytesRead = -1;
+  int bytesRead = 0;
   size_t offset = 0;
   size_t psize = req->content_len;
+  if (psize >= maxLen) psize = maxLen - 1;
   if (psize) {
-    do {
+    while (offset < psize) {
       bytesRead = httpd_req_recv(req, payload + offset, psize - offset);
       if (bytesRead < 0) {
         if (bytesRead == HTTPD_SOCK_ERR_TIMEOUT) {
@@ -153,12 +154,13 @@ static bool getPayload(char* payload) {
           continue;
         } else {
           LOG_WRN("Transfer request failed with status %i", bytesRead);
-          psize = 0;
+          offset = 0;
           break;
         }
-      } else offset += bytesRead;
-    } while (bytesRead > 0);
-    payload[psize] = 0;
+      } else if (bytesRead == 0) break;
+      else offset += bytesRead;
+    }
+    payload[offset] = 0;
     LOG_VRB("payload: %s\n", payload);
   }
   return bytesRead < 0 ? false : true;
@@ -172,9 +174,13 @@ static bool handleProp() {
   char value[10];
   if (extractHeaderVal(req, "Depth", value, sizeof(value)) == ESP_OK) depth = (!strcmp(value, "0")) ? false : true;
 
-  // get request payload content if present
-  char payload[req->content_len + 1] = {0};
-  if (req->content_len) getPayload(payload);
+  // get request payload content if present (bounded to avoid stack overflow)
+  char payload[512] = {0};
+  if (req->content_len >= sizeof(payload)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "PROPFIND payload too large");
+    return false;
+  }
+  if (req->content_len) getPayload(payload, sizeof(payload));
 
   // common header
   httpd_resp_set_status(req, "207 Multi-Status");
