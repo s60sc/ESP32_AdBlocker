@@ -33,7 +33,7 @@
 #define APP_VER "3.8"
 #define CFG_VER 9 // to determine if newer data files need to be loaded
 
-#define HTTP_CLIENTS 2 // http, ws
+#define HTTP_CLIENTS 4 // http, ws, sse, spare
 #define MAX_STREAMS 0
 #define INDEX_PAGE_PATH DATA_DIR "/AdBlocker" HTML_EXT
 #define FILE_NAME_LEN 96
@@ -60,7 +60,7 @@
 #define INCLUDE_CERTS false   // setupAssist.cpp (if using app https server)
 #define INCLUDE_WEBDAV true   // webDav.cpp (WebDAV protocol)
 
-#ifdef CONFIG_IDF_TARGET_ESP32S3 
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #define SERVER_STACK_SIZE (1024 * 8)
 #define DS18B20_STACK_SIZE (1024 * 2)
 #define STICK_STACK_SIZE (1024 * 4)
@@ -76,7 +76,7 @@
 #define MQTT_STACK_SIZE (1024 * 4)
 #define PING_STACK_SIZE (1024 * 3)
 #define SERVO_STACK_SIZE (1024)
-#define STATUS_STACK_SIZE (1024 * 4)
+#define STATUS_STACK_SIZE (1024 * 12) // scheduled/retry blocklist download runs TLS + snapshot save in this task
 #define SUSTAIN_STACK_SIZE (1024 * 4)
 #define TGRAM_STACK_SIZE (1024 * 6)
 #define TELEM_STACK_SIZE (1024 * 4)
@@ -126,11 +126,13 @@ enum DnsResult : uint8_t {
   DNS_BLOCKED  = 0,  // name matched blocklist        -> reply A 0.0.0.0
   DNS_RESOLVED = 1,  // upstream returned an address  -> reply A <ip>
   DNS_NXDOMAIN = 2,  // upstream RCODE 3 (no name)    -> reply RCODE 3
-  DNS_SERVFAIL = 3   // timeout / RCODE 2,4,5         -> reply RCODE 2
+  DNS_SERVFAIL = 3,  // timeout / RCODE 2,4,5         -> reply RCODE 2
+  DNS_NODATA   = 4   // upstream RCODE 0, 0 answers   -> reply RCODE 0, ancount 0
 };
 
+bool isDomainBlocked(const char* domainName); // Normalizes name (incl. www.) and checks blocklist (thread-safe)
 DnsResult checkBlocklist(const char* domainName, IPAddress& retIP); // Returns BLOCKED (retIP=0.0.0.0) or RESOLVED (not in list)
-DnsResult resolveDomainStatus(const char* domainName, IPAddress& retIP); // Upstream UDP resolve with cache/failover: RESOLVED, NXDOMAIN, or SERVFAIL
+DnsResult resolveDomainStatus(const char* domainName, IPAddress& retIP); // Upstream UDP resolve with cache/failover: RESOLVED, NXDOMAIN, NODATA, or SERVFAIL
 IPAddress resolveDomain(const char* domainName); // Legacy wrapper: returns IP or 0.0.0.0 on any failure
 
 /******************** Global app declarations *******************/

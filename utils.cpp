@@ -383,13 +383,13 @@ extern "C" {
 // Use internal on-chip temperature sensor (if present)
 uint8_t temprature_sens_read(); // sic
 }
-#elif CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2
+#elif CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32P4
 #include "driver/temperature_sensor.h"
 static temperature_sensor_handle_t temp_sensor = NULL;
 #endif
 
 static void prepInternalTemp() {
-#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32P4
   // setup internal sensor
   temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
   temperature_sensor_install(&temp_sensor_config, &temp_sensor);
@@ -402,7 +402,7 @@ float readInternalTemp() {
 #if CONFIG_IDF_TARGET_ESP32
   // convert on chip raw temperature in F to Celsius degrees
   intTemp = (temprature_sens_read() - 32) / 1.8f;  // value of 55 means not present
-#elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S3
+#elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
     temperature_sensor_get_celsius(temp_sensor, &intTemp); 
 #endif
   return intTemp;
@@ -804,7 +804,7 @@ static void sleepTimer(bool startCycle) {
 }
 
 void goToSleep(bool deepSleep) {
-#if !CONFIG_IDF_TARGET_ESP32C3
+#if !CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32P4
   // if deep sleep, restarts with reset
   // if light sleep, restarts by continuing this function
   LOG_INF("Going into %s sleep", deepSleep ? "deep" : "light");
@@ -868,7 +868,7 @@ bool utilsStartup() {
   bool res = false;
   initBrownout();
   sleepTimer(false);
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
   STACK_MEM = psramFound() ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
 #else
   // Original ESP32 must use internal memory for stacks
@@ -905,6 +905,7 @@ bool utilsStartup() {
 // catch software resets due to brownouts
 //https://github.com/espressif/esp-idf/blob/master/components/esp_system/port/brownout.c
 
+#if !CONFIG_IDF_TARGET_ESP32P4
 #include "esp_private/system_internal.h"
 #include "esp_private/rtc_ctrl.h"
 #include "hal/brownout_ll.h"
@@ -942,3 +943,9 @@ static void initBrownout() {
     brownoutStatus = 0; 
   }
 }
+#else
+static void initBrownout() {
+  // ESP32-P4 uses LP_ANA/LP_SYS rather than legacy RTC_CNTL; rely on IDF default brownout handling
+  brownoutStatus = 0;
+}
+#endif

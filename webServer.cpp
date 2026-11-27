@@ -181,7 +181,7 @@ static esp_err_t indexHandler(httpd_req_t* req) {
     return ESP_OK;
   } 
   // Show wifi wizard if not setup, using access point mode
-  if (!STORAGE.exists(INDEX_PAGE_PATH) && WiFi.status() != WL_CONNECTED) {
+  if (!STORAGE.exists(INDEX_PAGE_PATH) && !netIsConnected()) {
     // Open a basic wifi setup page
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_sendstr(req, setupPage_html);
@@ -709,7 +709,7 @@ bool startWebServer() {
   if (useHttps) {
     // HTTPS server
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
     config.httpd.stack_size = SERVER_STACK_SIZE;
 #endif  
     config.prvtkey_pem = (const uint8_t*)serverCerts[0];
@@ -738,7 +738,7 @@ bool startWebServer() {
 #endif
     // HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
     config.stack_size = SERVER_STACK_SIZE;
 #endif
     config.server_port = HTTP_PORT;
