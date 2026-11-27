@@ -2,11 +2,13 @@
 
 ESP32_AdBlocker acts as a DNS Sinkhole (like [Pi-Hole](https://pi-hole.net/)) by returning 0.0.0.0 for any domain names in its blocklist, else uses an external DNS server to resolve IP addresses. This prevents content being retrieved from or sent to blocked domains. A web server is provided to control the service and monitor its operation.
 
-Version 3.8 includes
+Version 4.0 includes
 * enhancements to DNS query handling and [LED status](#led-status) by user [@dateno1](https://github.com/dateno1)
 * timezone fix
 * fixes from user [@blueheart001](https://github.com/blueheart001)
 * compatibility with arduino-esp core v4.0.0
+* Much faster blocklist load, support for 16MB flash: by user [@PoloB12](https://github.com/PoloB12)
+* ESP32-P4 now supported, Ethernet only boot, performance and resilience improvements, new web inteface: by user [@mrcodetastic](https://github.com/mrcodetastic)
 
 ## Requirements
 
@@ -16,9 +18,9 @@ ESP32_AdBlocker is an Arduino sketch. The ESP32 module needs PSRAM:
 
 ## Operation
 
-<img src="extras/webpage.jpg" width="500" height="600">
+<img src="extras/webpage.png" width="500" height="500">
 
-After power up, the defaut blocklist will be downloaded. It will take several minutes for ESP32_AdBlocker to be ready after processing and sorting the data. Progress can be monitored on the web page. Subsequent reloads of the same file are much quicker as only updates need to be processed. ESP32-S3 is about twice as fast as the ESP32.
+After power up, the defaut blocklist will be downloaded. It will take several seconds for ESP32_AdBlocker to be ready after processing and sorting the data. Progress can be monitored on the web page. Subsequent reloads of the same file are quicker as only updates need to be processed. ESP32-S3 is about twice as fast as the ESP32.
 As only one file can be downloaded, a consolidated blocklist should be used. Ideally select a file less than the size of the PSRAM. The file format should be in either HOSTS format or Adblock format (only domain name entries processed). The following site for example provides a list of suitable files: https://github.com/StevenBlack/hosts.
 
 ESP32_AdBlocker will subsequently download the selected file daily at a given time to keep the blocklist updated. The user can also individually add their own sites to block or unblock which are stored in a local custom blocklist.
@@ -52,6 +54,8 @@ Download github files into the Arduino IDE sketch folder, removing `-main` from 
 Compile using esp32 arduino core min v3.1.1 with PSRAM enabled and the following Partition scheme:
 * ESP32-S3 - `8M with spiffs (...)`
 * ESP32 - `Minimal SPIFFS (...)`
+
+A replacement `partitions.csv` for 16 MB flash boards: same app/OTA slots as `8M with spiffs`, with LittleFS extended in place from 1.5 MB to 9.5 MB. That leaves room for the flash snapshot (useSnap) as the blocklist grows. Arduino picks it up automatically from the sketch folder if copied from **/extras** folder. It only takes effect with a USB upload, and existing files are kept.
 
 On first installation, the application will start in wifi AP mode - connect to SSID: **ESP32_AdBlocker_...**, to allow router and password details to be entered via the web page on `192.168.4.1`. The configuration data file (except passwords) is automatically created, and the application web pages automatically downloaded from GitHub to the SD card **/data** folder when an internet connection is available.
 
@@ -92,23 +96,13 @@ Options:
 
 ## LED Status
 
-An onboard or external LED can be use to signal the status of the app, depending on the type of LED available:
-
-Simple LED:
-* Starting: Medium blink
-* Downloading hosts: Medium blink
-* Active: Steady
-* Failure: Rapid blink
-* AP Mode: Fast blink
-* Offline: Slow blink
-
-W2812 RGB LED:
-* Starting: Medium blink Cyan
-* Downloading hosts: Medium blink Blue
-* Active: Steady Green
-* Failure: Rapid blink Red
-* AP Mode: Fast blink Yellow
-* Offline: Slow blink Magenta
+The onboard LED of each device can be used to indicate the ESP-NOW connection status. Value in brackets is WS2812 LED color if available:
+* Starting: Medium blink (Cyan)
+* Downloading hosts: Medium blink (Blue)
+* Active: Steady (Green)
+* Failure: Rapid blink (Red)
+* AP Mode: Fast blink (Yellow)
+* Offline: Slow blink (Magenta)
 
 The LED is configured using the **Settings** button in the web page tab **Edit Config**.  
 Setting the Brightness value to 0 disables the LED.

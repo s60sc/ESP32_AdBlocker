@@ -166,7 +166,7 @@ void checkDataFiles() {
   if (abandonDL) dataFilesChecked = true;
   else {
     bool res = true;
-    if (strlen(GITHUB_PATH)) { 
+    if (GITHUB_PATH[0]) { 
       res = checkFilePresent(COMMON_JS_PATH);
       if (res) res = checkFilePresent(INDEX_PAGE_PATH);
       if (!res) {

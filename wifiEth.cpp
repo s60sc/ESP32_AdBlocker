@@ -17,8 +17,6 @@ char portFwd[7] = "";
 float latLon[2] = {0};
 bool appSetupDone = false;
 
-static bool setupEspNow();
-
 
 /************************** Network (WiFi/Ethernet) **************************/
  
@@ -239,9 +237,6 @@ static void setWifiAP() {
     // allow AP time to start
     uint32_t t0 = millis();
     while (!APstarted && millis() - t0 < 2000) delay(50);
-#if defined(ESPNOW_SENDER) || defined(ESPNOW_RECEIVER)
-    setupEspNow();
-#endif
     debugMemory("setWifiAP");
   }
 }
@@ -837,6 +832,7 @@ char extIP[MAX_IP_LEN] = "Not assigned"; // router external IP
 bool doGetExtIP = true;
 
 void getExtIP() {
+#ifndef AUXILIARY
   // Get external IP address
   if (doGetExtIP) { 
     NetworkClient hclient;
@@ -870,6 +866,7 @@ void getExtIP() {
       remoteServerClose(hclient);
     }
   }
+#endif // AUXILIARY
 }
 
 
@@ -972,226 +969,3 @@ void remoteServerReset() {
   // reset fail counts
   for (uint8_t i = 0; i < REMFAILCNT; i++) failCounts[i] = 0;
 }
-
-
-/******************** ESP-NOW sender or receiver ************************/
-
-#if defined(ESPNOW_SENDER) || defined(ESPNOW_RECEIVER) 
-
-#include <esp_now.h>
-#include <esp_wifi.h>
-
-// configuration
-
-#define CH_MIN 1
-#define CH_MAX 13
-#define CH_PROBE 0xF2
-#define CH_REPLY 0xF3
-#define PROBES_PER_CHANNEL 3
-#define REPLY_WAIT_MS 200 // 60
-#define HEARTBEAT_INTERVAL 250  // ms, sender: max silence before a heartbeat
-#define HEARTBEAT_TIMEOUT  750  // ms, receiver: silence before link is lost
-#define RX_QUEUE_LEN  32
-#define PKT_LEN 6
-
-static const uint8_t BROADCAST_ADDR[PKT_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-static uint8_t otherMAC[PKT_LEN] = {0};
-static uint8_t ch = 0;
-static uint32_t lastCommandSend = 0;
-static bool firstOK = true;
-static bool firstFail = true;
-volatile bool gotReply = false;
-TaskHandle_t espNowHandle = NULL;
-
-static QueueHandle_t rxQueue;
-static volatile uint32_t lastReceive = 0;
-static bool linkUp = false;
-
-void sendCommandEspNow(const AppDataPacket &p) {
-  // Normal commands (not heartbeat) update lastCommandSend.
-  esp_err_t result = esp_now_send(otherMAC, (uint8_t*)&p, PKT_LEN);
-  if (result == ESP_OK) lastCommandSend = millis();
-}
-
-static void macToString(const uint8_t* mac, char* out) {
-  snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-}
-
-static bool parseMAC(const char* macstr = "") {
-  // parse MAC string into array
-  unsigned int b[6];
-  if (sscanf(macstr, "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) return false;
-  else for (int i = 0; i < 6; i++) otherMAC[i] = static_cast<uint8_t>(b[i]);
-  return true;
-}
-
-static void processHeartbeat() {
-  // Heartbeat deliberately not sent through sendCommand().
-  if (otherMAC[0]) {
-    uint32_t now = millis();
-    if (now - lastCommandSend < HEARTBEAT_INTERVAL) return;
-    AppDataPacket p;
-    p.command = HB_PING;
-    esp_now_send(otherMAC, (uint8_t*)&p, PKT_LEN);
-
-    // Treat heartbeat as the start of the next heartbeat period.
-    lastCommandSend = now;
-  }
-}
-
-static void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status) {
-  char macstr[18];
-  // suppress multiple messages when state changes
-  if (status == ESP_NOW_SEND_SUCCESS ) {
-    if (firstOK) {
-      macToString(info->des_addr, macstr);
-      LOG_INF("Sent to %s", macstr);
-      firstOK = false;
-      firstFail = true;
-    }
-  } else {
-    if (firstFail) {
-      macToString(info->des_addr, macstr);
-      LOG_WRN("Failed to send to %s", macstr);
-      firstOK = true;
-      firstFail = false;
-    }
-  } 
-}
-
-static bool setChannel(uint8_t ch) {
-  return esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) == ESP_OK;
-}
-
-static bool scanForReceiver() {
-  AppDataPacket p;
-  p.command = CH_PROBE;
-  for (ch = CH_MIN; ch <= CH_MAX; ch++) {
-    if (!setChannel(ch)) continue;
-    LOG_INF("Try channel %u", ch);
-    for (uint8_t i = 0; i < PROBES_PER_CHANNEL; i++) {
-      esp_now_send(BROADCAST_ADDR, (uint8_t*)&p, PKT_LEN);
-      uint32_t start = millis();
-      while (millis() - start < REPLY_WAIT_MS) {
-        if (otherMAC[0]) {
-          char macstr[18];
-          macToString(otherMAC, macstr);
-          LOG_INF("Reply on channel %u from %s", ch, macstr);
-          return true;
-        }
-        delay(1);
-      }
-    }
-  }
-  return false;
-}
-
-static bool addPeer(const uint8_t* mac) {
-  esp_now_peer_info_t peerInfo = {};
-  memcpy(peerInfo.peer_addr, mac, 6);
-  peerInfo.channel = 0; // 0 = current channel (set above)
-  peerInfo.ifidx = WIFI_IF_AP;
-  peerInfo.encrypt = false;
-  esp_err_t err = esp_now_add_peer(&peerInfo);
-  if (err != ESP_OK) {
-    LOG_WRN("Failed to add ESP-NOW peer: %s", esp_err_to_name(err) );
-    return false;
-  } else {
-    char macstr[18];
-    macToString(mac, macstr);
-    LOG_INF("ESP-NOW Sender AP MAC: %s using channel: %d", macstr, ch);
-  }
-  return true;
-}
-
-static void onReceive(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
-  // validate, timestamp and queue received data
-  if (len != sizeof(AppDataPacket)) return;
-  if (!otherMAC[0]) memcpy(otherMAC, info->src_addr, PKT_LEN);
-  lastReceive = millis();
-  xQueueSend(rxQueue, data, 0);   // drops the packet if the queue is full
-}
-
-static void processReceiver() {
-  AppDataPacket p;
-  while (xQueueReceive(rxQueue, &p, 0) == pdTRUE) {
-    if (!linkUp) {
-      linkUp = true;
-      espNowLinkRestored();
-    }
-    switch(p.command) {
-      case HB_PING:
-        p.command = HB_PONG;
-        esp_now_send(otherMAC, (uint8_t*)&p, PKT_LEN);
-      break;
-      case HB_PONG:
-      break; 
-      case CH_PROBE:
-        // receiver obtains sender MAC and replies
-        addPeer(otherMAC);
-        p.command = CH_REPLY;
-        esp_now_send(otherMAC, (uint8_t*)&p, PKT_LEN);
-      break;
-      case CH_REPLY:
-        // sender obtains Receiver MAC
-        esp_now_del_peer(BROADCAST_ADDR);
-        addPeer(otherMAC);
-      break;
-      default: 
-        appControllerCommand(p);
-      break;
-    }
-  }
-
-  // Signed difference, so a timestamp set by the callback just now cannot underflow
-  int32_t age = (int32_t)(millis() - lastReceive);
-  if (linkUp && age > HEARTBEAT_TIMEOUT) {
-    linkUp = false;
-    espNowLinkLost();
-  }
-}
-
-static void espNowTask (void* parameter) {
-  // runs at periodic interval 
-  TickType_t lastWake = xTaskGetTickCount(); 
-  while (true) {
-      processReceiver();
-#ifdef ESPNOW_SENDER
-      processHeartbeat();
-#endif
-    const TickType_t period = pdMS_TO_TICKS(20); // 50Hz
-    vTaskDelayUntil(&lastWake, period);
-  }
-  vTaskDelete(NULL);
-}
-
-static bool setupEspNow() {
-  if (esp_now_init() != ESP_OK) {
-    LOG_WRN("ESP-NOW init failed");
-    return false;
-  }
-  esp_now_register_send_cb(OnDataSent);
-  rxQueue = xQueueCreate(RX_QUEUE_LEN, sizeof(AppDataPacket));
-  if (esp_now_register_recv_cb(onReceive) != ESP_OK) {
-    LOG_WRN("Failed to register receiver callback");
-    return false;
-  }
-#ifdef ESPNOW_SENDER
-  // find a compatible receiver
-  addPeer(BROADCAST_ADDR);
-  if (!scanForReceiver()) {
-    LOG_WRN("Failed to find Receiver");
-    return false;
-  }
-#else
-  LOG_INF("ESP-NOW Receiver AP MAC: %s listening on channel: %ld", WiFi.AP.macAddress().c_str(), WiFi.channel()); 
-#endif
-  if (!espNowHandle) xTaskCreate(&espNowTask, "espNowTask", ESPNOW_STACK_SIZE, NULL, ESPNOW_PRI, &espNowHandle);
-  if (!espNowHandle) {
-    LOG_WRN("Failed to create espNowTask");
-    return false;
-  }
-  return true;
-}
-
-#endif // ESPNOW_SENDER || ESPNOW_RECEIVER

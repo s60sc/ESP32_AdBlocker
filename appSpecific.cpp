@@ -989,7 +989,7 @@ static bool loadBlockList(const char* reason) {
         if (useSnap) restored = loadSnapshot();
         setLamp(DevStatus::OFFLINE); //Change Status LED
         if (itemsLoaded <= 2) {
-          if (netMode == 0 && !strlen(ST_SSID))
+          if (netMode == 0 && !ST_SSID[0])
             LOG_ALT("First-time setup: set router SSID/Password in Network Settings");
           else {
             snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Blocklist URL %s failed to load", fileURL);
@@ -1001,7 +1001,7 @@ static bool loadBlockList(const char* reason) {
         }
       } else if (itemsLoaded <= 2) {
         // snapshot not enabled / available
-        if (netMode == 0 && !strlen(ST_SSID)) {
+        if (netMode == 0 && !ST_SSID[0]) {
           LOG_ALT("First-time setup: set router SSID/Password in Network Settings");
         } else {
           snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Blocklist URL %s failed to load", fileURL);
@@ -1012,7 +1012,7 @@ static bool loadBlockList(const char* reason) {
       }
       loadCustom();  // apply user provided rules either way
     } else {
-      bool unconfiguredWifi = (netMode == 0 && !strlen(ST_SSID));
+      bool unconfiguredWifi = (netMode == 0 && !ST_SSID[0]);
       LOG_WRN("Network/time not ready (%s)", unconfiguredWifi ? "unconfigured" : (netIsConnected() ? "clock" : (netMode > 0 ? "ethernet" : "wifi")));
       if (unconfiguredWifi) setLamp(DevStatus::AP_MODE); // prepDNS re-asserts anyway
       else if (itemsLoaded > 2) setLamp(DevStatus::OFFLINE);   // cached list serving
@@ -1025,14 +1025,14 @@ static bool loadBlockList(const char* reason) {
 
 bool appSetup() {
   if (!blMutex) blMutex = xSemaphoreCreateMutex();
-  while (!strlen(fileURL)) {
+  while (!fileURL[0]) {
     LOG_ALT("Enter blocklist URL on web page ...");
     delay(30000); // wait for file URL to be entered
   }
   ptrs = (uint32_t*)ps_calloc((maxDomains + 2), sizeof(uint32_t)); // for sorted pointers
   storageSize = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) - minMemory;
-  if (!ptrs || storageSize < ONEMEG * 4) {
-    snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Insufficient PSRAM for useful blocklist");
+  if (!ptrs || storageSize < ONEMEG * 3) {
+    snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Insufficient PSRAM - reduce maxDomains");
     LOG_ERR("%s", startupFailure);
     return false;
   }
@@ -1049,9 +1049,9 @@ bool appSetup() {
   resetBlocklistStorage();
   updateConfigVect("blockCnt", "0");
   updateConfigVect("allowCnt", "0");
-  if (netMode == 0 && !strlen(ST_SSID)) setLamp(DevStatus::AP_MODE);   // setup-needed state ASAP
+  if (netMode == 0 && !ST_SSID[0]) setLamp(DevStatus::AP_MODE);   // setup-needed state ASAP
   loadBlockList("Initial"); // best effort - DNS starts regardless
-  if (netMode == 0 && !strlen(ST_SSID)) setLamp(DevStatus::AP_MODE); //Change Status LED
+  if (netMode == 0 && !ST_SSID[0]) setLamp(DevStatus::AP_MODE); //Change Status LED
   prepDNS();
   appSetupDone = true;
   return true;
@@ -1089,7 +1089,7 @@ bool updateAppStatus(const char* variable, const char* value, bool fromUser) {
   else if (fromUser && !strcmp(variable, "wLoad")) checkDomain(value, false, false);
     else if (fromUser && !strcmp(variable, "zLoad")) {
     stopLoad = false;
-    if (strlen(value)) {
+    if (value[0]) {
       if (strcmp(value, fileURL) != 0) {
         /* genuinely new source: persist + controlled restart */
         strncpy(fileURL, value, IN_FILE_NAME_LEN - 1);
@@ -1177,7 +1177,7 @@ void doAppPing(bool timeSynced) {
   if (timeSynced && !timeSyncRetryDone) {
     timeSyncRetryDone = true;
     if (!lastLoadMs) loadBlockList("Retry");
-  } else if (checkAlarm() && strlen(fileURL)) loadBlockList("Scheduled");
+  } else if (checkAlarm() && fileURL[0]) loadBlockList("Scheduled");
 }
 
 void OTAprereq() {
@@ -1215,7 +1215,8 @@ alarmHour~4~1~N~Hour of Day when Run Blocklist Update
 #else
 "useSnap~0~1~C~Store copy of blocklist in flash\n"
 #endif
-R"~(maxDomains~250~1~N~Max number of domains (* 1000)
+R"~(
+maxDomains~200~1~N~Max number of domains (* 1000)
 minMemory~128~1~N~Minimum free memory (KB)
 maxDomLen~100~1~N~Max length of domain name
 allowCnt~0~2~D~Allowed domains
@@ -1229,7 +1230,8 @@ loadProg~0~2~D~Blocklist download progress
 #else
 "netMode~0~3~S:WiFi:Ethernet:Eth+AP~Network interface selection\n"
 #endif
-R"~(wLoad~Check Domain~2~A~Check if domain name is blocked
+R"~(
+wLoad~Check Domain~2~A~Check if domain name is blocked
 uLoad~Add Domain~2~A~Add to blocklist
 vLoad~Del Domain~2~A~Delete from blocklist
 zLoad~Reload~2~A~Reload Blocklist

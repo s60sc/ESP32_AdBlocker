@@ -563,7 +563,7 @@ constexpr LedStyle kStyles[] = {
   {Color::Yellow, Blink::Fast},
   {Color::Magenta, Blink::Slow},
 };
-static_assert(std::size(kStyles) <= static_cast<size_t>(DevStatus::Count), "LedStyle must have an entry in order of each devStatus");
+static_assert(std::size(kStyles) >= static_cast<size_t>(DevStatus::Count), "LedStyle must have an entry in order of each devStatus");
 
 // Perceived % -> scale, gamma 2.2: round(255 * p^2.2)
 constexpr uint8_t kBrightnessScale[] = { 0, 12, 55, 135, 255 };   // Off/Low/Medium/High/Full
@@ -679,15 +679,19 @@ static void setupLamp() {
 #ifdef LED_GPIO_NUM
     lampPin = LED_GPIO_NUM;
     itoa(lampPin, val, 10);
+#if !defined(STANDALONE)
     updateConfigVect("lampPin", val);
 #endif
+#endif // LED_GPIO_NUM
 #ifdef USE_WS2812
     lampType = (int)LedType::WS2812;
 #else
     if (lampType == 0) lampType = (int)LedType::Mono;
 #endif
     itoa(lampType, val, 10);
+#if !defined(STANDALONE)
     updateConfigVect("lampType", val);
+#endif
     thisLedType = (LedType)lampType;
     char lampStr[10];
     if (lampPin) {
@@ -736,12 +740,12 @@ static void setLedBrightness(Brightness b) {
   applyState();
 }
 
-void setLamp(uint8_t lampVal) {
-  setLamp(DevStatus::READY, (Brightness)lampVal);
+void setLamp(uint8_t lampLevel) {
+  setLamp(DevStatus::READY, (Brightness)lampLevel);
 }
 
-void setLamp(DevStatus s, uint8_t lampVal) {
-  setLamp(s, (Brightness)lampVal);
+void setLamp(DevStatus s, uint8_t lampLevel) {
+  setLamp(s, (Brightness)lampLevel);
 }
 
 void setLamp(DevStatus s) {
@@ -859,7 +863,6 @@ bool checkAppReady() {
   if (!DBG_ON) esp_log_level_set("*", ESP_LOG_NONE); // suppress ESP_LOG_ERROR messages
   appSetupDone = startupFailure[0] ? false : true;
   if (startupFailure[0]) LOG_WRN("%s", startupFailure);
-LOG_DBG("ready lampLevel %d", lampLevel);
   appSetupDone ? setLamp(DevStatus::READY, lampLevel) : setLamp(DevStatus::FAILURE, Brightness::Low);
   return appSetupDone;
 }
