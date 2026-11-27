@@ -33,7 +33,7 @@
 #define APP_VER "3.8"
 #define CFG_VER 9 // to determine if newer data files need to be loaded
 
-#define HTTP_CLIENTS 2 // http, ws
+#define HTTP_CLIENTS 4 // http, ws, sse, spare
 #define MAX_STREAMS 0
 #define INDEX_PAGE_PATH DATA_DIR "/AdBlocker" HTML_EXT
 #define FILE_NAME_LEN 96

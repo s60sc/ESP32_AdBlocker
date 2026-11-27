@@ -480,10 +480,14 @@
           return (typeof variable === 'undefined' || variable === null ) ? false : true;
         }
 
-        async function showAlert(value) {
-          $('#alertText').innerHTML = value;
-          await sleep(5000);
-          $('#alertText').innerHTML = "";
+        let alertTimer = null;
+        function showAlert(value) {
+          // Strip "[timestamp ALERT @ file:line] " prefix if present from SSE log line
+          const cleanMsg = String(value).replace(/^\[[^\]]*\]\s*/, '').trim();
+          $('#alertText').textContent = cleanMsg;
+          if (typeof onAlertMessage === 'function') onAlertMessage(cleanMsg);
+          if (alertTimer) clearTimeout(alertTimer);
+          alertTimer = setTimeout(() => { $('#alertText').textContent = ""; }, 6000);
         }
 
         async function saveChanges(resetMsg = "User requested restart") {

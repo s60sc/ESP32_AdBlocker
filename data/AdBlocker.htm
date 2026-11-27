@@ -503,6 +503,34 @@
         transform: translate(50%, 50%);
       }
 
+      .action-feedback {
+        display: inline-block;
+        margin-top: 0.35rem;
+        margin-left: 0.4rem;
+        padding: 0.2rem 0.55rem;
+        border-radius: 5px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        vertical-align: middle;
+        background: #e2e8f0;
+        color: #334155;
+      }
+
+      .action-feedback.ok {
+        background: #dcfce7;
+        color: #166534;
+      }
+
+      .action-feedback.warn {
+        background: #fef3c7;
+        color: #92400e;
+      }
+
+      .action-feedback.err {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+
       @media (max-width: 600px) {
         .tab { padding: 0.5rem 0.75rem; }
         .brand { width: 100%; margin-bottom: 0.35rem; }
@@ -659,6 +687,40 @@
         ethCS: 'Ethernet Interface'
       };
 
+      let lastActionKey = null;
+      let actionFeedbackTimer = null;
+
+      function setActionFeedback(key, msg, state = '') {
+        if (!key) return;
+        const textEl = document.getElementById(key);
+        if (!textEl) return;
+        const cell = textEl.closest('td');
+        if (!cell) return;
+        let badge = cell.querySelector('.action-feedback');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'action-feedback';
+          cell.appendChild(badge);
+        }
+        badge.className = 'action-feedback' + (state ? ' ' + state : '');
+        badge.textContent = msg;
+        if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
+        if (state) {
+          actionFeedbackTimer = setTimeout(() => {
+            if (badge && badge.parentNode) badge.remove();
+          }, 8000);
+        }
+      }
+
+      function onAlertMessage(msg) {
+        if (!lastActionKey) return;
+        const lower = msg.toLowerCase();
+        let state = 'ok';
+        if (lower.includes('not ') || lower.includes('no domain') || lower.includes('failed') || lower.includes('too long')) state = 'err';
+        else if (lower.includes('duplicate') || lower.includes('stopped') || lower.includes('in progress')) state = 'warn';
+        setActionFeedback(lastActionKey, msg, state);
+      }
+
       function processStatus(dest, key, value, fromUser = true) {
         // process change to status value
         if (dest == ID) {
@@ -676,8 +738,18 @@
           else if (key == "settings") getConfig("01");
           else if (key == "ethernet") getConfig("0123");
           else if (key == "fileURLn") return;
-          else if (key == "xStop") { if (fromUser) sendControl(key, value); return; }
-          else if (key == "zLoad" || key == "uLoad" || key == "vLoad" || key == "wLoad") { if (fromUser) getLoadURL(key); return; }
+          else if (key == "xStop" || key == "zzCustom") {
+            if (fromUser) {
+              lastActionKey = key;
+              setActionFeedback(key, 'Sending...');
+              sendControl(key, value);
+            }
+            return;
+          }
+          else if (key == "zLoad" || key == "uLoad" || key == "vLoad" || key == "wLoad") {
+            if (fromUser) getLoadURL(key);
+            return;
+          }
           // remaining changes are passed thru to app
           else if (fromUser) sendControl(key, value); 
         }
@@ -685,9 +757,15 @@
       }
       
       function getLoadURL(key) {
-        // use value in new URL unless blank
-        if ($('#fileURLn').value.length) sendControl(key, $('#fileURLn').value);
-        else sendControl(key, $('#fileURLc').value);
+        lastActionKey = key;
+        const inputVal = $('#fileURLn').value.trim();
+        if (key === 'zLoad') {
+          setActionFeedback(key, 'Reloading...');
+          sendControl(key, inputVal.length ? inputVal : $('#fileURLc').value);
+        } else {
+          setActionFeedback(key, 'Checking...');
+          sendControl(key, inputVal);
+        }
       }
       
 
@@ -706,7 +784,7 @@
       const doRefreshTimer = true;
       const doCustomSync = false;
       const doHeartbeat = false;
-      const doInitSSE = false;
+      const doInitSSE = true;
 
       const scriptElement = document.createElement('script');
       scriptElement.src = (window.location.protocol === "file:") ? '../../CommonMaster/common.js' : '/web?common.js';
