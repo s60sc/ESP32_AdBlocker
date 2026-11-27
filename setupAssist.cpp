@@ -332,31 +332,159 @@ const char* otaPage_html = R"~(
 <!DOCTYPE html>
 <html>
   <head>
-    <title>OTA</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>ESP32 AdBlocker - OTA Upload</title>
+    <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="80" font-size="80">⛔</text></svg>'>
     <style>
-      html body {height: 100%;}
+      * { box-sizing: border-box; }
+      html, body {
+        min-height: 100%;
+        margin: 0;
+        padding: 0;
+      }
       body {
-        font-family: Helvetica  !important;
-        background: #181818;
-        color: WhiteSmoke;
-        font-size: 1rem;; 
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: #f1f5f9;
+        color: #1e293b;
+        font-size: 0.95rem;
+        line-height: 1.5;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.65rem 1.25rem;
+        background: #0f172a;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.15);
+      }
+      .brand {
+        color: #f8fafc;
+        font-weight: 700;
+        font-size: 1.05rem;
+        letter-spacing: -0.01em;
+      }
+      .back-btn {
+        display: inline-block;
+        color: #cbd5e1;
+        text-decoration: none;
+        padding: 0.4rem 0.85rem;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        background: rgba(255, 255, 255, 0.08);
+        transition: background 0.2s, color 0.2s;
+      }
+      .back-btn:hover {
+        background: rgba(255, 255, 255, 0.16);
+        color: #ffffff;
+      }
+      .container {
+        max-width: 560px;
+        margin: 2.25rem auto;
+        padding: 0 1rem;
+      }
+      .card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+        padding: 1.5rem;
+      }
+      .card-title {
+        font-size: 1.2rem;
+        font-weight: 700;
+        color: #0f172a;
+        margin: 0 0 0.25rem 0;
+      }
+      .card-subtitle {
+        font-size: 0.88rem;
+        color: #64748b;
+        margin: 0 0 1.25rem 0;
+      }
+      .upload-box {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        padding: 1.75rem 1rem;
+        border: 2px dashed #cbd5e1;
+        border-radius: 8px;
+        background: #f8fafc;
+        text-align: center;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .upload-box:hover {
+        border-color: #2563eb;
+        background: #eff6ff;
+      }
+      .upload-btn {
+        display: inline-block;
+        background: #2563eb;
+        color: #ffffff;
+        padding: 0.5rem 1.15rem;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+      .upload-hint {
+        font-size: 0.8rem;
+        color: #64748b;
+      }
+      #otafile {
+        display: none;
+      }
+      .progress-wrap {
+        margin-top: 1.25rem;
+      }
+      progress {
+        width: 100%;
+        height: 12px;
+        accent-color: #2563eb;
+        border-radius: 6px;
+      }
+      #status {
+        margin: 0.75rem 0 0.2rem 0;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #0f172a;
+        min-height: 1.4em;
+      }
+      #loaded_n_total {
+        margin: 0;
+        font-size: 0.82rem;
+        color: #64748b;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+        min-height: 1.2em;
       }
     </style>
   </head>
   <body>
-    <br>
-    <h3>Upload data file or bin file to ESP32</h3>
-    <br>
-    <a href="javascript:history.back()" style="color: WhiteSmoke;">Go Back</a>
-    <br><br><br>
-    <form id="upload_form" enctype="multipart/form-data" method="post">
-      <input type="file" name="otafile" id="otafile" onchange="otaUploadFile()"><br>
-      <br>
-      <progress id="progressOta" value="0" max="100" style="width:200px;"></progress>%
-      <h3 id="status"></h3>
-      <p id="loaded_n_total"></p>
-    </form>
-    
+    <div class="topbar">
+      <span class="brand">⛔ ESP32 AdBlocker</span>
+      <a href="javascript:history.back()" class="back-btn">&larr; Go Back</a>
+    </div>
+    <div class="container">
+      <div class="card">
+        <h2 class="card-title">OTA &amp; File Upload</h2>
+        <p class="card-subtitle">Select a firmware (.bin) file or a web data file to upload to the ESP32.</p>
+        <form id="upload_form" enctype="multipart/form-data" method="post">
+          <label class="upload-box" for="otafile">
+            <span class="upload-btn">Choose File to Upload</span>
+            <span class="upload-hint">Upload starts automatically once a file is selected</span>
+            <input type="file" name="otafile" id="otafile" onchange="otaUploadFile()">
+          </label>
+          <div class="progress-wrap">
+            <progress id="progressOta" value="0" max="100"></progress>
+            <div id="status"></div>
+            <p id="loaded_n_total"></p>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <script>
       const defaultPort = window.location.protocol == 'http:' ? 80 : 443; 
       const webPort = !window.location.port ? defaultPort : window.location.port; // in case alternative ports specified
@@ -366,7 +494,9 @@ const char* otaPage_html = R"~(
       async function otaUploadFile() {
         // notify server to start ota 
         let file = $("#otafile").files[0];
-        const response = await fetch('/control?startOTA=' + file.name);
+        if (!file) return;
+        $("#status").innerHTML = "Starting upload: " + file.name + "...";
+        const response = await fetch('/control?startOTA=' + encodeURIComponent(file.name));
         if (response.ok) {
           // submit file for uploading
           let xhr = new XMLHttpRequest();
@@ -374,7 +504,7 @@ const char* otaPage_html = R"~(
           xhr.addEventListener("load", completeHandler, false);
           xhr.addEventListener("error", errorHandler, false);
           xhr.addEventListener("abort", abortHandler, false);
-          xhr.open("POST", webServer +  '/upload');
+          xhr.open("POST", webServer + '/upload');
           xhr.send(file);
         } else alert(response.status + ": " + response.statusText); 
       }
@@ -384,7 +514,7 @@ const char* otaPage_html = R"~(
         let percent = (event.loaded / event.total) * 100;
         $("#progressOta").value = Math.round(percent);
         $("#status").innerHTML = Math.round(percent) + "% transferred";
-        if (event.loaded  == event.total) $("#status").innerHTML = 'Uploaded, wait for completion result';
+        if (event.loaded == event.total) $("#status").innerHTML = 'Uploaded, waiting for completion result...';
       }
 
       function completeHandler(event) {

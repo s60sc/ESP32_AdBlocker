@@ -478,8 +478,75 @@
         border-bottom: 1px solid var(--itemBorder);
       }
 
-      .config-group tr:nth-child(2).section-header td {
+      .config-group tr:first-child.section-header td {
         border-top: none;
+      }
+
+      /* Standalone Statistics card */
+      .stats-card {
+        background: var(--menuBackground);
+        border: 1px solid var(--itemBorder);
+        border-radius: 10px;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+        padding: 1rem 1.25rem 1.15rem 1.25rem;
+        margin-bottom: 1.25rem;
+      }
+
+      .stats-title {
+        color: #1e40af;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.75rem;
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.85rem;
+      }
+
+      .stat-box {
+        background: var(--sectionBg);
+        border: 1px solid var(--itemBorder);
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+      }
+
+      .stat-label {
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--mutedText);
+        margin-bottom: 0.2rem;
+      }
+
+      .stat-value {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+        font-size: 1.45rem;
+        font-weight: 700;
+        color: #0f172a;
+        line-height: 1.2;
+      }
+
+      .field-hint {
+        display: block;
+        font-size: 0.78rem;
+        font-weight: 400;
+        color: var(--mutedText);
+        margin-top: 0.2rem;
+        line-height: 1.35;
+      }
+
+      .action-btn {
+        margin: 0;
+        padding: 0.5rem 1rem;
+        min-width: 230px;
+        font-size: 0.88rem;
+        font-weight: 600;
+        border-radius: 6px;
+        text-align: center;
+        transition: background 0.15s;
       }
 
       .svgCols {
@@ -535,6 +602,8 @@
       @media (max-width: 600px) {
         .tab { padding: 0.5rem 0.75rem; }
         .brand { width: 100%; margin-bottom: 0.35rem; }
+        .stats-grid { grid-template-columns: 1fr; }
+        .action-btn { width: 100%; min-width: 0; }
         .config-group td:first-child { width: 48%; padding: 0.55rem 0.65rem; }
         .config-group td:last-child { width: 52%; padding: 0.55rem 0.65rem; }
       }
@@ -671,14 +740,8 @@
       let refreshInterval = 5000;
       let appClock = Math.ceil(Date.now() / 1000);
 
-      // Section headers inserted into dynamically generated config/main tables
+      // Section headers inserted into dynamically generated Edit Config tables
       const tableSections = {
-        // Main AdBlocker tab
-        allowCnt: 'Statistics',
-        fileURLc: 'Blocklist Configuration',
-        uLoad: 'Actions',
-        zzzAdblockOn: 'Service Control',
-        // Edit Config tabs
         AP_Pass: 'Access Point',
         Auth_Name: 'Web Authentication',
         ST_Pass: 'Wi-Fi Station',
@@ -687,6 +750,94 @@
         lampActiveHi: 'Status LED',
         ethCS: 'Ethernet Interface'
       };
+
+      function escHtml(val) {
+        return String(val ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function buildCustomTable(configData, cfgGroup, divShowData) {
+        if (cfgGroup !== '012') return false;
+
+        const allowCnt = escHtml(configData.allowCnt ?? '0');
+        const blockCnt = escHtml(configData.blockCnt ?? '0');
+        const fileURLc = escHtml(configData.fileURLc ?? '');
+        const loadProg = escHtml(configData.loadProg ?? '');
+        const adblockOn = Number(configData.zzzAdblockOn) === 1;
+
+        divShowData.innerHTML = `
+          <div class="stats-card">
+            <div class="stats-title">Statistics</div>
+            <div class="stats-grid">
+              <div class="stat-box">
+                <div class="stat-label">Allowed domains</div>
+                <div id="allowCnt" class="displayonly stat-value">${allowCnt}</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-label">Blocked domains</div>
+                <div id="blockCnt" class="displayonly stat-value">${blockCnt}</div>
+              </div>
+            </div>
+          </div>
+          <table>
+            <tr class="section-header"><td colspan="2">Blocklist Configuration</td></tr>
+            <tr>
+              <td>Current blocklist URL</td>
+              <td><input type="text" class="configItem readonly-field" id="fileURLc" value="${fileURLc}" readonly></td>
+            </tr>
+            <tr>
+              <td>
+                Domain name or new blocklist URL
+                <span class="field-hint">Enter a domain to add, delete, or check — or a new hosts file URL to reload</span>
+              </td>
+              <td><input type="text" class="configItem nochange" id="fileURLn" placeholder="e.g. ads.example.com or https://.../hosts" value=""></td>
+            </tr>
+            <tr>
+              <td>Blocklist download progress</td>
+              <td><input type="text" class="configItem readonly-field" id="loadProg" value="${loadProg}" readonly></td>
+            </tr>
+            <tr class="section-header"><td colspan="2">Actions</td></tr>
+            <tr>
+              <td>Add to blocklist</td>
+              <td><button type="button" class="action-btn" id="uLoad" value="1">Add domain to blocklist</button></td>
+            </tr>
+            <tr>
+              <td>Delete from blocklist</td>
+              <td><button type="button" class="action-btn" id="vLoad" value="1">Delete specific domain name</button></td>
+            </tr>
+            <tr>
+              <td>Check domain</td>
+              <td><button type="button" class="action-btn" id="wLoad" value="1">Check if domain is blocked</button></td>
+            </tr>
+            <tr>
+              <td>Stop download</td>
+              <td><button type="button" class="action-btn" id="xStop" value="1">Stop blocklist download</button></td>
+            </tr>
+            <tr>
+              <td>Reload blocklist</td>
+              <td><button type="button" class="action-btn" id="zLoad" value="1">Reload blocklist</button></td>
+            </tr>
+            <tr>
+              <td>Clear custom blocklist</td>
+              <td><button type="button" class="action-btn" id="zzCustom" value="1">Clear custom domains</button></td>
+            </tr>
+            <tr class="section-header"><td colspan="2">Service Control</td></tr>
+            <tr>
+              <td>Enable AdBlocker</td>
+              <td>
+                <div class="switch">
+                  <input type="checkbox" class="configItem" id="zzzAdblockOn" value="${adblockOn ? '1' : '0'}"${adblockOn ? ' checked' : ''}>
+                  <label class="slider" for="zzzAdblockOn"></label>
+                </div>
+              </td>
+            </tr>
+          </table>
+        `;
+        return true;
+      }
 
       let lastActionKey = null;
       let actionFeedbackTimer = null;

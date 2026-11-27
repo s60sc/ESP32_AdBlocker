@@ -169,12 +169,18 @@
           }, heartbeatInterval);
         }
         
+        let eventSource = null;
+
         // handle Server Sent Events
         function startEventSource() {
           if (doInitSSE) {
+            if (eventSource) {
+              eventSource.close();
+              eventSource = null;
+            }
             // Create a new EventSource instance, pointing to the server's endpoint
-            console.log("sse "+webServer+'/sse');
-            const eventSource = new EventSource(webServer+'/sse');
+            console.log("sse " + webServer + '/sse');
+            eventSource = new EventSource(webServer + '/sse');
 
             // Listen for the 'open' event when the connection is established
             eventSource.addEventListener('open', function(event) {
@@ -193,10 +199,20 @@
             
             // unhandled events
             eventSource.onerror = (err) => {
-              console.error("SSE error:", err);
-            }
+              if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+                console.warn("SSE connection closed, reconnecting...");
+                setTimeout(startEventSource, 5000);
+              }
+            };
           }
         }
+
+        window.addEventListener('beforeunload', () => {
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+        });
 
         /*********** page layout functions ***********/
 
@@ -768,15 +784,9 @@
           else { 
             // setup different config table
             cfgGroupNow = cfgGroup;
-            const table = document.createElement("table"); 
-            // Create table header row from heading names
-            const colHeaders = ['Setting Name', 'Setting Value']; 
-            let tr = table.insertRow(-1); 
-            for (let i = 0; i < colHeaders.length; i++) {
-              let th = document.createElement("th");
-              th.innerHTML = colHeaders[i];
-              tr.appendChild(th);
-            }
+            if (typeof buildCustomTable === 'function' && buildCustomTable(configData, cfgGroup, divShowData)) return;
+            const table = document.createElement("table");
+            let tr;
 
             // add each setting as a row containing setting label and setting value
             let nextPair = 3;

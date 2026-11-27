@@ -14,8 +14,9 @@ int refreshVal = 5000; // msecs
 
 static httpd_handle_t httpServer = NULL; // web server port
 static int fdWs = -1; // websocket sockfd
-static httpd_handle_t sseSocketHD; // SSE support
-static int sseSocketFD;
+static httpd_handle_t sseSocketHD = NULL; // SSE support
+static int sseSocketFD = -1;
+static SemaphoreHandle_t sseMutex = NULL;
 bool useHttps = false;
 bool useSecure = false;
 bool heartBeatDone = false;
@@ -392,20 +393,35 @@ bool parseJson(int rxSize) {
 
 static esp_err_t sseHandler(httpd_req_t *req) {
   if (!checkAuth(req)) return ESP_OK;
+  if (sseMutex == NULL) sseMutex = xSemaphoreCreateMutex();
   // enable Server Sent Events
   const char sseHeader[] = "HTTP/1.1 200 OK\r\n"
                           "Cache-Control: no-store\r\n"
                           "Connection: keep-alive\r\n"
                           "Access-Control-Allow-Origin: *\r\n"
-                          "Content-Type: text/event-stream\r\n\r\n";
-  sseSocketHD = req->handle;
-  sseSocketFD = httpd_req_to_sockfd(req);
-  httpd_socket_send(sseSocketHD, sseSocketFD, sseHeader, strlen(sseHeader), 0); 
+                          "Content-Type: text/event-stream\r\n\r\n"
+                          "retry: 5000\r\n\r\n";
+  if (sseMutex && xSemaphoreTake(sseMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+    sseSocketHD = req->handle;
+    sseSocketFD = httpd_req_to_sockfd(req);
+    int res = httpd_socket_send(sseSocketHD, sseSocketFD, sseHeader, strlen(sseHeader), 0);
+    if (res < 0) {
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
+    xSemaphoreGive(sseMutex);
+  }
   return ESP_OK;
 }
 
 static void onClose(httpd_handle_t hd, int fd) {
-  if (fd == sseSocketFD) {
+  if (sseMutex && xSemaphoreTake(sseMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (fd == sseSocketFD) {
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
+    xSemaphoreGive(sseMutex);
+  } else if (fd == sseSocketFD) {
     sseSocketFD = -1;
     sseSocketHD = NULL;
   }
@@ -414,18 +430,29 @@ static void onClose(httpd_handle_t hd, int fd) {
 
 #define SSESEP "\r\n\r\n" // SSE event separator
 void sendSSE(const char* eventType, const char* eventData) {
-  // send event data to browser
-  if (sseSocketFD > 0) {
-    char eventMsg[30];
+  // send event data to browser (serialized across FreeRTOS tasks)
+  if (sseSocketFD <= 0 || sseSocketHD == NULL || sseMutex == NULL) return;
+  if (xSemaphoreTake(sseMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+  if (sseSocketFD > 0 && sseSocketHD != NULL) {
+    char eventMsg[32];
     int msgLen = snprintf(eventMsg, sizeof(eventMsg), "event: %s\ndata: ", eventType);
-    if (msgLen >= sizeof(eventMsg)) msgLen = sizeof(eventMsg) - 1;
+    if (msgLen >= (int)sizeof(eventMsg)) msgLen = sizeof(eventMsg) - 1;
     int res = httpd_socket_send(sseSocketHD, sseSocketFD, eventMsg, msgLen, 0);
-    res = httpd_socket_send(sseSocketHD, sseSocketFD, eventData, strlen(eventData), 0);
-    res = httpd_socket_send(sseSocketHD, sseSocketFD, SSESEP, (sizeof(SSESEP) - 1), 0);
+    if (res >= 0) res = httpd_socket_send(sseSocketHD, sseSocketFD, eventData, strlen(eventData), 0);
+    if (res >= 0) res = httpd_socket_send(sseSocketHD, sseSocketFD, SSESEP, (sizeof(SSESEP) - 1), 0);
     if (res == HTTPD_SOCK_ERR_TIMEOUT) esp_rom_printf("SENDSSE: Timeout/interrupted while using socket\n");
-    if (res == HTTPD_SOCK_ERR_FAIL) esp_rom_printf("SENDSSE: Unrecoverable error while using socket\n");
-    if (res == HTTPD_SOCK_ERR_INVALID) esp_rom_printf("SENDSSE: Invalid arguments %s, %s\n", eventType, eventData);
+    else if (res == HTTPD_SOCK_ERR_FAIL) {
+      esp_rom_printf("SENDSSE: Unrecoverable error while using socket\n");
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
+    else if (res == HTTPD_SOCK_ERR_INVALID) {
+      esp_rom_printf("SENDSSE: Invalid arguments %s, %s\n", eventType, eventData);
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
   }
+  xSemaphoreGive(sseMutex);
 }
 
 static esp_err_t updateHandler(httpd_req_t *req) {
