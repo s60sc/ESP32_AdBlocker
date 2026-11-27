@@ -21,7 +21,7 @@ static char fmtStorageSize[FILE_NAME_LEN];
 static int timeoutVal = 10000; // 10 secs on download stream data being available
 static size_t blocklistSize = 0;
 static uint8_t domainLine[maxLineLen];
-static uint32_t blockCnt = 0, allowCnt = 0, itemsLoaded = 0, duplicates = 0;
+static uint32_t blockCnt = 0, allowCnt = 0, itemsLoaded = 0, pendingItems = 0, duplicates = 0;
 static bool stopLoad = false;
 static bool downloading = false;
 static bool adBlockOn = true; // whether app is set to block or not by user
@@ -99,45 +99,97 @@ static void addDomain(uint32_t ptr, const char* domainStr, size_t domLen) {
   ptrs[ptr] = blocklistSize; // points to latest domain name in 'storage'
   blocklistSize += domLen + 1; // add terminator
   itemsLoaded++;
+  ptrs[itemsLoaded] = blocklistSize;
+  pendingItems = itemsLoaded;
 }
 
-static void appendDomainUnsorted(const char* domainStr, size_t domLen) {
-  // O(1) append used during bulk download; finalized by finalizeBlocklist() in O(N log N)
-  if (blocklistSize + domLen + 1 > storageSize || itemsLoaded >= maxDomains) {
+/* Bulk load: downloaded domains are appended unsorted after the sorted prefix [0, itemsLoaded),
+ * then sorted, deduplicated, and compacted in finalizeBlocklist().
+ * DNS lookups only search [0, itemsLoaded) while downloading, and pause cleanly via
+ * blMutex/blocklistReady during finalizeBlocklist(). */
+
+static bool appendDomain(const char* domainStr, size_t domLen) {
+  // cheap check for the common case of consecutive duplicates (eg "www.x" then "x")
+  if (pendingItems > itemsLoaded && !strcmp(storage + ptrs[pendingItems - 1], domainStr)) {
+    duplicates++;
+    return true;
+  }
+  if (blocklistSize + domLen + 1 > storageSize || pendingItems >= maxDomains) {
     LOG_VRB("Ignored '%s', blocklist storage/limit reached", domainStr);
-    return;
+    return false;
   }
   memcpy(storage + blocklistSize, domainStr, domLen);
   storage[blocklistSize + domLen] = 0;
-  ptrs[itemsLoaded++] = blocklistSize;
+  ptrs[pendingItems++] = blocklistSize;
   blocklistSize += domLen + 1;
+  return true;
+}
+
+static uint32_t cmpCount = 0;
+static bool domainLess(uint32_t a, uint32_t b) {
+  // yield occasionally so a long sort in PSRAM cannot starve other tasks or trip the watchdog
+  if ((++cmpCount & 0x3FFF) == 0) vTaskDelay(1);
+  return strcmp(storage + a, storage + b) < 0;
 }
 
 static void finalizeBlocklist() {
-  // Sort pointer table in O(N log N) and deduplicate in-place in O(N)
-  uint32_t t0 = millis();
-  vTaskDelay(1);
-  if (itemsLoaded > 1) {
-    std::sort(ptrs, ptrs + itemsLoaded, [](uint32_t a, uint32_t b) {
-      return strcmp(storage + a, storage + b) < 0;
-    });
-    uint32_t writeIdx = 0;
-    for (uint32_t i = 0; i < itemsLoaded; i++) {
-      if (writeIdx > 0 && strcmp(storage + ptrs[writeIdx - 1], storage + ptrs[i]) == 0) {
-        duplicates++;
-      } else {
-        ptrs[writeIdx++] = ptrs[i];
-      }
-    }
-    itemsLoaded = writeIdx;
+  // Sort pointer table in O(N log N), drop duplicates & empty (deleted) entries, and compact storage
+  uint32_t n = pendingItems;
+  if (n <= itemsLoaded) {
+    blLock();
+    ptrs[itemsLoaded] = blocklistSize;
+    blocklistReady = true;
+    blUnlock();
+    return;
   }
-  ptrs[itemsLoaded] = blocklistSize;
-  vTaskDelay(1);
+  uint32_t t0 = millis();
+
+  // Pause DNS lookups while ptrs[] and storage[] are reordered and compacted
   blLock();
+  blocklistReady = false;
+  lastBlockedDomain[0] = 0;
+  blUnlock();
+
+  std::sort(ptrs, ptrs + n, domainLess);
+
+  // Deduplicate in place and drop empty (deleted) entries
+  uint32_t u = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    const char* cur = storage + ptrs[i];
+    if (!*cur) continue;
+    if (u > 0 && !strcmp(cur, storage + ptrs[u - 1])) {
+      duplicates++;
+    } else {
+      ptrs[u++] = ptrs[i];
+    }
+    if ((i & 0xFFF) == 0) vTaskDelay(1);
+  }
+
+  // Compact storage: walk live names in storage order and slide each down over gaps
+  vTaskDelay(1);
+  std::sort(ptrs, ptrs + u);
+  size_t w = 0;
+  for (uint32_t i = 0; i < u; i++) {
+    size_t len = strlen(storage + ptrs[i]) + 1;
+    if (ptrs[i] != w) memmove(storage + w, storage + ptrs[i], len);
+    ptrs[i] = w;
+    w += len;
+    if ((i & 0xFFF) == 0) vTaskDelay(1);
+  }
+  if (blocklistSize > w) memset(storage + w, 0, blocklistSize - w); // addDomain() relies on zeroed free space
+  blocklistSize = w;
+
+  std::sort(ptrs, ptrs + u, domainLess); // back into alphabetical order for binary search
+  ptrs[u] = blocklistSize; // trailing sentinel
+  vTaskDelay(1);
+
+  blLock();
+  pendingItems = u;
+  itemsLoaded = u;
   lastBlockedDomain[0] = 0;
   blocklistReady = true;
   blUnlock();
-  LOG_INF("Sorted & deduplicated %lu domains in %lums", itemsLoaded > 2 ? itemsLoaded - 2 : 0, millis() - t0);
+  LOG_INF("Sorted & compacted %lu domains in %lums", (unsigned long)(u > 2 ? u - 2 : 0), (unsigned long)(millis() - t0));
 }
 
 static bool updateCustomFile(char* domainName, bool doDelete) {
@@ -226,7 +278,7 @@ static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
 
   if (size_t domLen = formatDomain(domName); domLen > 0) {
     if (domLen >= maxDomLen) LOG_ALT("Domain name %s is too long to process", domName);
-    else if (!blocklistReady) LOG_ALT("Blocklist reload in progress, try again shortly");
+    else if (!blocklistReady || ((doUpdate || doDelete) && downloading)) LOG_ALT("Blocklist reload in progress, try again shortly");
     else {
       if (doUpdate) { // addition
         blLock();
@@ -235,11 +287,20 @@ static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
         if (blPtr) {
           // resolve outside lock to avoid blocking DNS queries during network I/O
           if (resolveDomain(domName) != IPAddress(0, 0, 0, 0)) {
+            bool added = false, reloading = false;
             blLock();
-            blPtr = binarySearch(domName, true);
-            if (blPtr) addDomain(blPtr, domName, domLen);
+            if (blocklistReady && !downloading) {
+              blPtr = binarySearch(domName, true);
+              if (blPtr) {
+                addDomain(blPtr, domName, domLen);
+                added = true;
+              }
+            } else reloading = true;
             blUnlock();
-            if (updateCustomFile(domName, false)) LOG_ALT("Domain name %s IS added to blocklist", domName);
+            if (added) {
+              if (updateCustomFile(domName, false)) LOG_ALT("Domain name %s IS added to blocklist", domName);
+            } else if (reloading) LOG_ALT("Blocklist reload in progress, try again shortly");
+            else LOG_ALT("Domain name %s NOT added to blocklist as duplicate", domName);
           } else LOG_ALT("Domain name %s NOT added to blocklist as not resolved", domName);
         } else LOG_ALT("Domain name %s NOT added to blocklist as duplicate", domName);
       } else {
@@ -285,7 +346,7 @@ static void extractBlocklist() {
       if (!strcasecmp(tokenItem, "localhost") ||
           !strcasecmp(tokenItem, "localhost.localdomain") ||
           !strcasecmp(tokenItem, "local")) return;
-      appendDomainUnsorted(tokenItem, domLen);
+      appendDomain(tokenItem, domLen); // capacity is checked by the download loop
     }
   }
 }
@@ -332,6 +393,7 @@ static bool downloadBlockList() {
   }
 
   if (res) {
+    res = false; // only true once HTTP download actually succeeds
     HTTPClient https;
     size_t downloadSize = 0;
     char progStr[10];
@@ -349,54 +411,102 @@ static bool downloadBlockList() {
           if (left > 0) LOG_INF("File size: %s", fmtSize(left));
           else LOG_WRN("File size unknown");
           LOG_INF("%s memory available for download", fmtStorageSize);
-          if (left > storageSize) LOG_WRN("File is larger than memory, may get truncated");
+          if (left > (int)storageSize) LOG_WRN("File is larger than memory, may get truncated");
           NetworkClient* stream = https.getStreamPtr(); // stream data to client
           uint32_t lastRead = millis();
           size_t lineCnt = 0;
 
-          blLock();
-          blocklistReady = false;
-          blUnlock();
+          // Read in 4KB chunks instead of byte-by-byte readBytesUntil() TLS calls;
+          // allocate temporarily in PSRAM/heap (with small stack fallback) to avoid permanent internal SRAM use.
+          size_t rxBufSize = CHUNKSIZE;
+          uint8_t* rxBuf = (uint8_t*)ps_malloc(rxBufSize);
+          if (!rxBuf) rxBuf = (uint8_t*)malloc(rxBufSize);
+          uint8_t fallbackBuf[256];
+          bool freeRxBuf = (rxBuf != NULL);
+          if (!rxBuf) {
+            rxBuf = fallbackBuf;
+            rxBufSize = sizeof(fallbackBuf);
+          }
 
-          while (https.connected() && (left > 0 || left == -1)) {
-            if (stopLoad) break;
-            if (stream->available()) {
-              size_t lineSize = stream->readBytesUntil('\n', domainLine, maxLineLen - 1);
-              domainLine[lineSize] = 0;
-              lineSize++; // add in count for terminator
-              downloadSize += lineSize;
-              if (left > 0) left -= lineSize;
-              extractBlocklist();
-              if (itemsLoaded >= maxDomains) {
+          size_t lineLen = 0;
+          bool full = false;
+          bool timedOut = false;
+          size_t savedBlSize = blocklistSize;
+          pendingItems = itemsLoaded; // append after the existing sorted prefix [0, itemsLoaded)
+
+          // Returns false if storage / domain limit is still reached even after sorting out duplicates
+          auto processLine = [&]() -> bool {
+            domainLine[lineLen] = 0;
+            lineLen = 0;
+            extractBlocklist();
+            if (pendingItems >= maxDomains || storageSize - blocklistSize < maxLineLen) {
+              finalizeBlocklist(); // deduplicate and compact to reclaim space
+              savedBlSize = blocklistSize;
+              if (pendingItems >= maxDomains) {
                 LOG_ALT("Blocklist truncated as domain limit reached %u", maxDomains);
-                break;
+                return false;
               }
-              if (++lineCnt % 1000 == 0) {
-                // periodically check remaining memory
-                size_t remaining = storageSize - blocklistSize;
-                if (remaining < maxLineLen) {
-                  LOG_ALT("Blocklist truncated to avoid memory overflow, %u bytes remaining\n", remaining);
-                  break;
-                }
-                // show progress
-                if (left > 0) {
-                  float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
-                  LOG_RAW("%0.1f%%\n", loadProg);
-                  sprintf(progStr, "%0.1f%%", loadProg);
-                  updateConfigVect("loadProg", progStr);
-                }
+              if (storageSize - blocklistSize < maxLineLen) {
+                LOG_ALT("Blocklist truncated to avoid memory overflow, %u bytes remaining\n", (unsigned)(storageSize - blocklistSize));
+                return false;
+              }
+            }
+            if (++lineCnt % 1000 == 0 && left > 0) {
+              // show progress
+              float loadProg = (float)(downloadSize * 100.0 / (downloadSize + left));
+              LOG_RAW("%0.1f%%\n", loadProg);
+              sprintf(progStr, "%0.1f%%", loadProg);
+              updateConfigVect("loadProg", progStr);
+            }
+            return true;
+          };
+
+          while (!full && (https.connected() || stream->available()) && (left > 0 || left == -1)) {
+            if (stopLoad) break;
+            int avail = stream->available();
+            if (avail > 0) {
+              size_t toRead = (size_t)avail;
+              if (toRead > rxBufSize) toRead = rxBufSize;
+              if (left > 0 && toRead > (size_t)left) toRead = (size_t)left;
+              int got = stream->read(rxBuf, toRead);
+              if (got <= 0) continue;
+              downloadSize += got;
+              if (left > 0) left = (got >= left) ? 0 : left - got;
+              for (int i = 0; i < got && !full; i++) {
+                uint8_t c = rxBuf[i];
+                if (c == '\n') full = !processLine();
+                else if (lineLen < maxLineLen - 1) domainLine[lineLen++] = c; // overlong lines truncated cleanly
               }
               lastRead = millis();
             } else if (millis() - lastRead > timeoutVal) {
               // timed out on read
               if (left > 0) LOG_WRN("Timeout on download, %s unread", fmtSize(left));
+              else LOG_WRN("Timeout on download after %s", fmtSize(downloadSize));
+              timedOut = true;
               break;
-            }
+            } else delay(1); // nothing buffered yet, don't busy-spin
           }
-          finalizeBlocklist();
-          LOG_INF("Download complete, processed %s in %lu secs", fmtSize(downloadSize), (millis() - loadTime) / 1000);
-          LOG_ALT("Loaded %lu blocked domains excluding %lu duplicates, using %s of %s", itemsLoaded > 2 ? itemsLoaded - 2 : 0, duplicates, fmtSize(blocklistSize), fmtStorageSize);
-          res = true;
+          if (freeRxBuf) free(rxBuf);
+
+          // A cut-off download (eg Wi-Fi drop or timeout) must not count as success,
+          // otherwise a partial list replaces the active list and overwrites the flash snapshot.
+          if ((left > 0 || timedOut || downloadSize == 0) && !full && !stopLoad) {
+            if (blocklistSize > savedBlSize) {
+              memset(storage + savedBlSize, 0, blocklistSize - savedBlSize);
+              blocklistSize = savedBlSize;
+            }
+            pendingItems = itemsLoaded;
+            if (left > 0) LOG_WRN("Download incomplete, %s missing - treated as failed", fmtSize(left));
+            else LOG_WRN("Download incomplete (%s read) - treated as failed", fmtSize(downloadSize));
+            res = false;
+          } else {
+            if (!full && lineLen) processLine(); // handle last line without trailing newline
+            finalizeBlocklist();
+            LOG_INF("Download complete, processed %s in %lu secs", fmtSize(downloadSize), (unsigned long)((millis() - loadTime) / 1000));
+            LOG_ALT("Loaded %lu blocked domains excluding %lu duplicates, using %s of %s",
+                    (unsigned long)(itemsLoaded > 2 ? itemsLoaded - 2 : 0), (unsigned long)duplicates, fmtSize(blocklistSize), fmtStorageSize);
+            res = true;
+          }
         } else LOG_WRN("Unexpected result code %u %s", httpCode, https.errorToString(httpCode).c_str());
       } else LOG_ERR("Connection failed with error: %s", https.errorToString(httpCode).c_str());
     } else {
@@ -686,6 +796,8 @@ static void saveSnapshot() {
           (unsigned)(t1 - t0));
 }
 
+static void resetBlocklistStorage();
+
 /* Restore arena from snapshot. No WiFi / no valid clock required.
  * The sorted pointer table is rebuilt by walking the NUL-separated
  * entries, then verified against the stored item count. */
@@ -802,6 +914,7 @@ static bool loadSnapshot() {
   if (!ok || idx != h.items || pos != h.blsize || computedCrc != fileCrc) {
     LOG_WRN("Snapshot invalid (%s)",
             computedCrc != fileCrc ? "CRC" : idx != h.items ? "count" : "bounds");
+    resetBlocklistStorage();
     return false;
   }
   
@@ -809,6 +922,7 @@ static bool loadSnapshot() {
   ptrs[idx] = pos;                              // trailing sentinel
   blocklistSize = h.blsize;  
   itemsLoaded = h.items;
+  pendingItems = itemsLoaded;
   blockCnt = h.blockCnt;     
   allowCnt = h.allowCnt; 
   duplicates = h.duplicates;
@@ -834,6 +948,7 @@ static void resetBlocklistStorage() {
   memcpy(storage, "!", 1); // always first so ptrs[0] = 0
   blocklistSize = 2;
   itemsLoaded = 1;
+  duplicates = 0; // don't carry a restored snapshot's duplicate count into a fresh rebuild
   addDomain(0, "#", 1);
   blocklistReady = true;
   blUnlock();
@@ -857,12 +972,12 @@ static bool loadBlockList(const char* reason) {
     /* REPLACE semantics: a successful full download rebuilds the list from scratch
      * Rollback safety: the previous generation lives in the flash snapshot.
      * Without a snapshot (very first ever run or not enabled), fall back to merge-mode */
-    bool canReplace = restored || STORAGE.exists(SNAP_PATH);
+    bool canReplace = restored || (useSnap && STORAGE.exists(SNAP_PATH));
     setLamp(DevStatus::DOWNLOAD); //Change Status LED
     if (timeSynchronized || !useSecure) {
       if (canReplace && itemsLoaded > 2) resetBlocklistStorage(); // fresh build, not merge
       res = downloadBlockList();
-      if (!res) resetBlocklistStorage();
+      if (!res && (canReplace || itemsLoaded <= 2)) resetBlocklistStorage();
       if (res) {
         setLamp(DevStatus::READY); //Change Status LED
         lastLoadMs = millis();

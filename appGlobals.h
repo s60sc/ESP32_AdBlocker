@@ -76,7 +76,7 @@
 #define MQTT_STACK_SIZE (1024 * 4)
 #define PING_STACK_SIZE (1024 * 3)
 #define SERVO_STACK_SIZE (1024)
-#define STATUS_STACK_SIZE (1024 * 4)
+#define STATUS_STACK_SIZE (1024 * 12) // scheduled/retry blocklist download runs TLS + snapshot save in this task
 #define SUSTAIN_STACK_SIZE (1024 * 4)
 #define TGRAM_STACK_SIZE (1024 * 6)
 #define TELEM_STACK_SIZE (1024 * 4)
