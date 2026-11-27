@@ -158,7 +158,8 @@ static Slice extractNestedValue(const char* obj, size_t len, const char* nestedK
 bool getJsonValue(const char* json, const char* key, char* value, const char* nestedKey, int occurrence, size_t valueSize) {
   // Returns nth occurrence (1-indexed, default is 1)
   // If nestedKey is provided, extracts that field from the object value
-  if (!json || !key || !value || valueSize == 0) return false;
+  if (!json || !key || !value) return false;
+  if (valueSize == 0) valueSize = FILE_NAME_LEN;
 
   const char* p = json;
   const char* end = json + strlen(json);
