@@ -480,10 +480,14 @@
           return (typeof variable === 'undefined' || variable === null ) ? false : true;
         }
 
-        async function showAlert(value) {
-          $('#alertText').innerHTML = value;
-          await sleep(5000);
-          $('#alertText').innerHTML = "";
+        let alertTimer = null;
+        function showAlert(value) {
+          // Strip "[timestamp ALERT @ file:line] " prefix if present from SSE log line
+          const cleanMsg = String(value).replace(/^\[[^\]]*\]\s*/, '').trim();
+          $('#alertText').textContent = cleanMsg;
+          if (typeof onAlertMessage === 'function') onAlertMessage(cleanMsg);
+          if (alertTimer) clearTimeout(alertTimer);
+          alertTimer = setTimeout(() => { $('#alertText').textContent = ""; }, 6000);
         }
 
         async function saveChanges(resetMsg = "User requested restart") {
@@ -777,9 +781,18 @@
             // add each setting as a row containing setting label and setting value
             let nextPair = 3;
             let saveKey, saveVal;
+            const sections = (typeof tableSections !== 'undefined') ? tableSections : {};
             Object.entries(configData).forEach(([key, value]) => {
               if (key != "cfgGroup") { // skip over this entry 
                 if (nextPair == 3) {
+                  // insert optional section header row before this key
+                  if (sections[key]) {
+                    const secRow = table.insertRow(-1);
+                    secRow.className = 'section-header';
+                    const secCell = secRow.insertCell(-1);
+                    secCell.colSpan = 2;
+                    secCell.textContent = sections[key];
+                  }
                   // new row
                   tr = table.insertRow(-1);
                   nextPair = 0;
@@ -799,7 +812,7 @@
                   let valCntr = 0;
                   switch (value.charAt(0)) {
                     case 'A': // action button
-                      inputHtml = '<svg class="svgCols nochange"><rect class="buttonRect" tabindex="0"/><text id="' + saveKey + '" class="btnText" text-anchor="start" dominant-baseline="middle">' + saveVal + '</text></svg>';
+                      inputHtml = '<svg class="svgCols nochange"><rect class="buttonRect" tabindex="0"/><text id="' + saveKey + '" class="midText" text-anchor="middle" dominant-baseline="middle">' + saveVal + '</text></svg>';
                     break;
                     case 'B': // B:lab1:lab2:etc
                       // radio button group
@@ -818,7 +831,7 @@
                       inputHtml += '<label class="slider" for="' + saveKey + '"></label></div>';
                     break;
                     case 'D': // display only
-                      inputHtml = '<input type="text" class="configItem" id="' + saveKey + '" value="'+ saveVal +'" readonly style="background-color: var(--menuBackground);">';
+                      inputHtml = '<input type="text" class="configItem readonly-field" id="' + saveKey + '" value="'+ saveVal +'" readonly>';
                     break;
                     case 'L': // binary string input
                       inputHtml = `<input type="text" oninput="this.value = this.value.replace(/[^01]/g, '')" placeholder="0101..." class="configItem" id="` + saveKey + `" value="`+ saveVal +`" >`;

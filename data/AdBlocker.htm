@@ -2,6 +2,7 @@
 <!DOCTYPE html>
 <!-- 
   s60sc 2022 
+  with improvements by @mrcodetastic
 -->     
 <html>     
   <head>
@@ -12,196 +13,271 @@
     
     <style>
       :root {
-        /* colors used on web pages - see https://www.w3schools.com/colors/colors_names.asp */
-        --buttonReady: LightGray;
-        --buttonActive: DarkGray;
-        --buttonHover: silver; 
-        --buttonText: white;
-        --buttonLabel: black;
-        --itemInactive: Gainsboro; /* very light gray */
-        --menuBackground: LightGray;
-        --inputText: navy;
-        --pageText: black; 
-        --inputBackground: whiteSmoke; 
-        --alertMsg: red;
-        --itemBorder: LightGray; 
-        --pageBackground: white;
-        
-        /* logcolors */
-        --warnColor: orange;
-        --errColor: red;
-        --chkColor: green;
-        --dbgColor: blue;
-        
+        /* Clean light slate palette */
+        --buttonReady: #2563eb;
+        --buttonActive: #1e40af;
+        --buttonHover: #1d4ed8;
+        --buttonText: #ffffff;
+        --buttonLabel: #0f172a;
+        --itemInactive: #cbd5e1;
+        --menuBackground: #ffffff;
+        --inputText: #0f172a;
+        --pageText: #1e293b;
+        --mutedText: #64748b;
+        --inputBackground: #ffffff;
+        --readonlyBackground: #f8fafc;
+        --alertMsg: #dc2626;
+        --itemBorder: #e2e8f0;
+        --pageBackground: #f1f5f9;
+        --headerBar: #0f172a;
+        --sectionBg: #f8fafc;
+        --switchOn: #16a34a;
+
+        /* log colors */
+        --warnColor: #f59e0b;
+        --errColor: #ef4444;
+        --chkColor: #22c55e;
+        --dbgColor: #60a5fa;
+
         /* element sizes */
-        --bodySize:1rem; /* used as basis for element, padding, and font sizes */
+        --bodySize: 0.95rem;
         --buttonSize: var(--bodySize);
         --buttonHalf: calc(var(--buttonSize) / 2);
         --buttonQuart: calc(var(--buttonSize) / 4);
         --buttonDbl: calc(var(--buttonSize) * 2);
-        --inputSize: calc(var(--bodySize) * 0.9);
-        --headingSize: calc(var(--bodySize) * 1.25);
-        --subheadingSize: var(--bodySize);
-        --footerSize: calc(var(--bodySize) * 0.7);   
+        --inputSize: 0.9rem;
+        --headingSize: 1.15rem;
+        --subheadingSize: 0.85rem;
+        --footerSize: 0.75rem;
       }
 
-      html body {height: 100%;}      
+      * { box-sizing: border-box; }
+
+      html, body {
+        min-height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+
       body {
-        font-family: Helvetica  !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         background: var(--pageBackground);
         color: var(--pageText);
-        font-size: var(--bodySize);      
+        font-size: var(--bodySize);
+        line-height: 1.5;
       }
-      
+
       .hidden {
         display: none;
       }
-      
+
       progress {
-        accent-color: var(--buttonActive);    
+        accent-color: var(--buttonReady);
         width: calc(var(--buttonSize) * 15);
       }
-      
+
       .fixed {
-        position: fixed;
+        position: sticky;
         top: 0;
+        z-index: 50;
       }
 
-      .alertMsg {
-        left:10%;
-        bottom: var(--buttonDbl);
-        position:absolute;
-        display:block;
-        color:var(--alertMsg);
-        z-index:20;
-        height: var(--buttonDbl);
-      }
-    
-      .header {
-        font-size: var(--headingSize);
-        padding-left: var(--buttonHalf);
-        font-weight:bold;
-      }
-      
-      .subheader {
-        font-style: italic;
-        font-size: var(--subheadingSize);
-        padding-left: var(--buttonQuart);
-      }          
-    
+      /* Top navigation bar */
       .tab {
         display: flex;
-        overflow: hidden;
-        background: var(--menuBackground);
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.65rem 1.25rem;
+        background: var(--headerBar);
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.15);
+      }
+
+      .brand {
+        color: #f8fafc;
+        font-weight: 700;
+        font-size: 1.05rem;
+        margin-right: auto;
+        padding-right: 1rem;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
       }
 
       .tab button {
-        background: var(--buttonReady);
-        float: left;
+        background: transparent;
+        color: #cbd5e1;
         border: none;
         outline: none;
         cursor: pointer;
-        padding: var(--buttonHalf);
-        transition: 0.3s;
-        font-size: calc(var(--buttonSize) * 1.1);
+        padding: 0.45rem 0.9rem;
+        margin: 0;
+        border-radius: 6px;
+        transition: background 0.2s, color 0.2s;
+        font-size: 0.92rem;
+        font-weight: 600;
+      }
+
+      .tab button:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: #ffffff;
       }
 
       .tab button.active {
-        box-shadow: 0 0 0 var(--buttonQuart)  var(--buttonActive);
-        background: var(--buttonActive);
-      }
-      
-      .tab button.hover {
-        background: var(--buttonHover);
+        background: var(--buttonReady);
+        color: #ffffff;
+        box-shadow: none;
       }
 
       .tab button.disabled {
         cursor: default;
-        background: var(--itemInactive)
+        opacity: 0.5;
       }
-      
+
+      /* Main page container */
+      .container {
+        max-width: 820px;
+        margin: 1.5rem auto 3rem auto;
+        padding: 0 1rem;
+      }
+
       .tabcontent {
         display: none;
       }
-      
+
+      .card {
+        background: var(--menuBackground);
+        border: 1px solid var(--itemBorder);
+        border-radius: 10px;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+        padding: 1.25rem;
+        margin-bottom: 1.25rem;
+      }
+
+      .alertMsg {
+        position: fixed;
+        left: 50%;
+        bottom: 1.25rem;
+        transform: translateX(-50%);
+        z-index: 100;
+        pointer-events: none;
+      }
+
+      #alertText:not(:empty) {
+        display: inline-block;
+        background: #1e293b;
+        color: #ffffff;
+        padding: 0.6rem 1.15rem;
+        border-radius: 8px;
+        font-size: 0.9rem;
+        font-weight: 500;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+        border-left: 4px solid var(--buttonReady);
+      }
+
+      .header {
+        font-size: var(--headingSize);
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 0.25rem;
+      }
+
+      .subheader {
+        font-size: var(--subheadingSize);
+        color: var(--mutedText);
+        margin-bottom: 0.2rem;
+      }
+
       .grid-cols3 {
-        grid-template-columns: calc(var(--buttonSize) * 14) calc(var(--buttonSize) * 12) calc(var(--buttonSize) * 12);
-      }
-      
-      .grid-cols4 {
-        grid-template-columns: calc(var(--buttonSize) * 10) calc(var(--buttonSize) * 10) calc(var(--buttonSize) * 10) calc(var(--buttonSize) * 10)
-      }
-      
-      .grid-cols3, .grid-cols4 {
         display: grid;
-        background: none;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 0.75rem;
+        align-items: center;
+      }
+
+      .grid-cols4 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 0.75rem;
+        align-items: center;
+      }
+
+      .grid-cols3, .grid-cols4 {
         text-align: center;
         font-size: var(--inputSize);
         fill: var(--buttonLabel);
-        border: 0px solid var(--itemBorder);
         dominant-baseline: middle;
         text-anchor: middle;
       }
-      
+
       .cfgTitle {
-        grid-column: 1/5;
+        grid-column: 1 / -1;
         text-align: left;
+        margin-top: 0.75rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--itemBorder);
       }
-      
+
       svg {
-        width: calc(var(--buttonSize) * 8);
-        height: var(--buttonDbl);
+        width: 100%;
+        max-width: 160px;
+        height: 36px;
+        display: inline-block;
+        vertical-align: middle;
       }
-      
+
       rect {
         fill: var(--buttonReady);
         width: 100%;
-        height: 100%; 
+        height: 100%;
         x: 0;
         y: 0;
-        ry: 15%;
+        rx: 6;
+        ry: 6;
+        cursor: pointer;
+        transition: fill 0.15s;
       }
-       
+
       .buttonRect:focus {
         fill: var(--buttonActive);
-        outline: none; /* Remove focus outline if not needed */
+        outline: none;
       }
-      
+
       rect:hover {
         fill: var(--buttonHover);
       }
-    
+
       text {
-        font-size: var(--buttonSize); 
-        fill: var(--buttonText); 
-        transform: translate(50%,50%);  
+        font-family: inherit;
+        font-size: 0.88rem;
+        font-weight: 600;
+        fill: var(--buttonText);
+        transform: translate(50%, 50%);
         pointer-events: none;
       }
-      
+
       .panel {
         padding: 0 var(--buttonSize);
         display: none;
         background-color: var(--pageBackground);
         overflow: hidden;
       }
-      
+
       button {
-        display: block;
+        display: inline-block;
         margin: var(--buttonQuart);
-        padding: var(--buttonQuart);
+        padding: 0.45rem 0.9rem;
         border: 0;
-        line-height: var(--headingSize);
         cursor: pointer;
         color: var(--buttonText);
         background: var(--buttonReady);
-        border-radius: var(--buttonQuart);
+        border-radius: 6px;
         font-size: var(--buttonSize);
-        outline: 0
+        font-weight: 600;
+        outline: 0;
       }
-      
+
       button:active {
-       box-shadow: 0 0 0 var(--buttonQuart) var(--buttonActive);
-       background: var(--buttonActive);
+        background: var(--buttonActive);
       }
 
       button:hover {
@@ -210,326 +286,441 @@
 
       button:disabled {
         cursor: default;
-        background: var(--itemInactive)
+        background: var(--itemInactive);
       }
-      
+
       .input-group {
         position: relative;
         display: flex;
         flex-wrap: nowrap;
-        line-height: var(--buttonDbl);
-        margin-top: var(--buttonHalf);
-      }
-      
-      .input-group>label {
-        display: inline-block;
-        padding-right: var(--buttonHalf);
-        min-width: calc(var(--buttonSize)*7);
-      }
-      
-      .input-group>input {
-          width: 100%;
+        align-items: center;
+        gap: 0.75rem;
       }
 
-      .input-group input,.input-group select {
-        flex-grow: 1
+      .input-group > label {
+        display: inline-block;
+        min-width: auto;
+        margin: 0;
       }
-      
-      input, #appLog {
-        font: var(--inputSize) 'Courier New';
-        font-weight:bold;
+
+      .input-group input, .input-group select {
+        flex-grow: 1;
+      }
+
+      input, select {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+        font-size: var(--inputSize);
+        font-weight: 500;
         color: var(--inputText);
         background: var(--inputBackground);
-        min-width: calc(var(--buttonSize) * 10);     
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 0.42rem 0.65rem;
+        transition: border-color 0.15s, box-shadow 0.15s;
       }
-      
+
+      input:focus, select:focus {
+        outline: none;
+        border-color: var(--buttonReady);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+      }
+
+      input.readonly-field {
+        background: var(--readonlyBackground);
+        color: #334155;
+        border-color: var(--itemBorder);
+        font-weight: 600;
+      }
+
+      input[type="text"] {
+        width: 100%;
+      }
+
       input[type="radio"], input[type="checkbox"], progress {
-        accent-color: var(--buttonActive);
+        accent-color: var(--buttonReady);
       }
 
-      input[type="text"]{
-        font-size: var(--inputSize); 
-        width: calc(var(--buttonSize) * 6);
-      }
-      
-      input[type="checkbox"] {
-        width : calc(var(--inputSize) * 1.5);
-        height : calc(var(--inputSize) * 1.5);
-        margin-top: calc(var(--buttonQuart) * -1);
-      }
-      
       input[type="radio"] {
-        width: var(--inputSize);
-        height: var(--inputSize);
-        min-width: var(--buttonSize);
+        width: 1rem;
+        height: 1rem;
+        margin: 0 0.6rem 0 0.25rem;
+        vertical-align: middle;
       }
-      
-      input[type="number"]:not(.configItem), input[type="time"] {
-        font-size: var(--buttonDbl);
-        border: 1px solid var(--itemBorder);
-        margin-bottom: var(--buttonQuart);
-        min-width: calc(var(--buttonSize) * 7);
-        text-align: center;
-      } 
-      
-      input[type=number]::-webkit-inner-spin-button {
-        opacity: 1;
-      }
-      
-      input[type="button"]:focus {
-        background-color: var(--buttonActive);
-      }
- 
-      
-      /* checkbox slider */
 
-      /* Hide the default checkbox */
+      input.configItem[type="number"] {
+        width: 6.5rem;
+        text-align: right;
+      }
+
+      /* Toggle switch */
+      .switch {
+        display: inline-flex;
+        align-items: center;
+      }
+
       .switch input[type="checkbox"] {
         display: none;
       }
 
-      /* static part */
       .switch .slider {
-        width: calc(var(--buttonSize) * 3);  
-        height: var(--buttonSize);
-        top: calc(var(--buttonQuart) / 2);
+        width: 48px;
+        height: 26px;
         background: var(--itemInactive);
         position: relative;
         display: inline-block;
-        border-radius: var(--buttonSize);
-      }
-      .switch input[type="checkbox"]:checked + .slider {
-        background-color: var(--buttonActive);
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background-color 0.25s;
       }
 
-      /* moving part */
+      .switch input[type="checkbox"]:checked + .slider {
+        background-color: var(--switchOn);
+      }
+
       .switch .slider::before {
         content: "";
-        height: var(--buttonSize);
-        width: var(--buttonSize);
-        background: var(--inputBackground);
+        height: 20px;
+        width: 20px;
+        background: #ffffff;
         position: absolute;
-        left: var(--buttonQuart);
-        border-radius: var(--buttonSize);
-        transition: transform 0.4s;
-      }
-      .switch input[type="checkbox"]:checked + .slider::before {
-        transform: translateX(calc(var(--buttonSize)*1.5));
+        top: 3px;
+        left: 3px;
+        border-radius: 50%;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+        transition: transform 0.25s;
       }
 
-      
-      #appLog{
-        height:50vh;
-        width:90%;
-        border:2px solid var(--itemBorder);
-        overflow:auto;
-        background: var(--inputBackground);
-        white-space: pre-wrap; /* preserves spaces, tabs, and newlines */
+      .switch input[type="checkbox"]:checked + .slider::before {
+        transform: translateX(22px);
       }
-      
-      select {
-        border: 1px solid var(--menuBackground);
-        font-size: var(--inputSize);
-        outline: 0;
-        border-radius: var(--buttonQuart);
-        margin-top: 2px;
+
+      /* Log viewer */
+      #appLog {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+        font-size: 0.82rem;
+        line-height: 1.45;
+        height: 55vh;
+        width: 100%;
+        padding: 0.85rem;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        overflow: auto;
+        background: #0f172a;
+        color: #e2e8f0;
+        white-space: pre-wrap;
       }
-      
+
       .selectField {
-         height: calc(var(--inputSize) * 1.5);
+        width: 100%;
+        max-width: 240px;
+        font-family: inherit;
       }
-      
+
+      /* Config & main tables */
+      .config-group {
+        margin: 0;
+      }
+
       table {
-        border-collapse:collapse; 
-        table-layout:fixed;
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
         background: var(--menuBackground);
+        border: 1px solid var(--itemBorder);
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
         text-align: left;
       }
-      
-      th, td {
-        font-weight:bold; 
+
+      .config-group th {
+        background: #f1f5f9;
+        color: #475569;
+        font-size: 0.8rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 0.7rem 1rem;
+        border-bottom: 1px solid var(--itemBorder);
       }
-      
-      .config-group th, .config-group td {
-        border: 0;
-        padding: var(--buttonHalf) var(--buttonHalf) 0 var(--buttonHalf); 
-        padding-left: var(--buttonSize);
-        line-height: var(--buttonDbl);
-        font-size: var(--buttonSize);
-      } 
-      
-      .configGroup td input[type="number"] {
-        font-size: var(--buttonSize);
+
+      .config-group td {
+        padding: 0.65rem 1rem;
+        border-bottom: 1px solid #f1f5f9;
+        vertical-align: middle;
+        font-size: 0.93rem;
       }
-      
-      input.configItem[type="radio"] {
-        min-width: var(--buttonSize); 
+
+      .config-group tr:last-child td {
+        border-bottom: none;
       }
-      
-      input.configItem[type="number"] {
-        min-width: calc(var(--buttonSize) * 3); 
-        width: calc(var(--buttonSize) * 3); 
+
+      .config-group td:first-child {
+        width: 44%;
+        font-weight: 600;
+        color: #334155;
       }
-      
+
+      .config-group td:last-child {
+        width: 56%;
+      }
+
+      /* Section header rows */
+      .config-group tr.section-header td {
+        background: var(--sectionBg);
+        color: #1e40af;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        padding: 0.6rem 1rem;
+        border-top: 2px solid var(--itemBorder);
+        border-bottom: 1px solid var(--itemBorder);
+      }
+
+      .config-group tr:nth-child(2).section-header td {
+        border-top: none;
+      }
+
       .svgCols {
-        width: calc(var(--buttonSize) * 9);  
-        height: calc(var(--buttonSize) * 2);  
-        fill: var(--buttonLabel);
-        font-size: calc(var(--buttonSize) * 1.5);
-      }   
-      
+        width: 100%;
+        max-width: 160px;
+        height: 36px;
+      }
+
       .upperText {
-        transform: translate(50%,30%);  
+        transform: translate(50%, 30%);
       }
-      
+
       .lowerText {
-        transform: translate(50%,70%);  
+        transform: translate(50%, 70%);
       }
-      
+
       .midText {
-        transform: translate(50%,50%); 
+        transform: translate(50%, 50%);
       }
-      
+
       .btnText {
-        transform: translate(0%,70%); 
+        transform: translate(50%, 50%);
       }
-      
+
+      .action-feedback {
+        display: inline-block;
+        margin-top: 0.35rem;
+        margin-left: 0.4rem;
+        padding: 0.2rem 0.55rem;
+        border-radius: 5px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        vertical-align: middle;
+        background: #e2e8f0;
+        color: #334155;
+      }
+
+      .action-feedback.ok {
+        background: #dcfce7;
+        color: #166534;
+      }
+
+      .action-feedback.warn {
+        background: #fef3c7;
+        color: #92400e;
+      }
+
+      .action-feedback.err {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+
+      @media (max-width: 600px) {
+        .tab { padding: 0.5rem 0.75rem; }
+        .brand { width: 100%; margin-bottom: 0.35rem; }
+        .config-group td:first-child { width: 48%; padding: 0.55rem 0.65rem; }
+        .config-group td:last-child { width: 52%; padding: 0.55rem 0.65rem; }
+      }
     </style>
   </head>
-  
+
   <body>
     <div class="tab fixed">
+      <span class="brand">⛔ ESP32 AdBlocker</span>
       <button class="tablinks active" name="AdBlocker" id="mainTab">AdBlocker</button>
       <button class="tablinks" name="ShowLog">Show Log</button>
       <button class="tablinks" name="EditConfig">Edit Config</button>
       <button class="tablinks" onclick="window.location.href='/web?OTA.htm'">OTA Upload</button>
     </div>
-    <br><br><br>
-    <div id="AdBlocker" class="tabcontent" style="display:block">
-      <div>
-        <p class='config-group' id="Main012"></p>
+
+    <div class="container">
+      <div id="AdBlocker" class="tabcontent" style="display:block">
+        <div class="config-group" id="Main012"></div>
+      </div>
+
+      <div id="ShowLog" class="tabcontent">
+        <div class="card">
+          <div class="grid-cols4" style="margin-bottom: 0.85rem;">
+            <div class="input-group" id="dbg-group" style="grid-column: span 2;">
+              <label for="dbgVerbose" class="header" title="Set verbose logging">Verbose Logging</label>
+              <div class="switch">
+                <input id="dbgVerbose" type="checkbox">
+                <label title="Outputs additional information to log" class="slider" for="dbgVerbose"></label>
+              </div>
+            </div>
+            <div>
+              <svg>
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="showsys" class="midText" text-anchor="middle" dominant-baseline="middle">System</text>
+              </svg>
+            </div>
+            <div>
+              <svg>
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="reset" class="midText" text-anchor="middle" dominant-baseline="middle">Reboot ESP</text>
+              </svg>
+            </div>
+          </div>
+          <div class="grid-cols3" style="margin-bottom: 1rem;">
+            <div>
+              <svg>
+                <rect class="buttonRect" tabindex="0"/>
+                <text class="local midText" id="refreshLog" text-anchor="middle" dominant-baseline="middle">Refresh Log</text>
+              </svg>
+            </div>
+            <div>
+              <svg>
+                <rect class="buttonRect" tabindex="0"/>
+                <text class="local midText" id="clearLog" text-anchor="middle" dominant-baseline="middle">Clear Log</text>
+              </svg>
+            </div>
+            <div>
+              <svg>
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="save" class="midText" text-anchor="middle" dominant-baseline="middle">Save</text>
+              </svg>
+            </div>
+          </div>
+          <div id="appLog"></div>
+        </div>
+      </div>
+
+      <div id="EditConfig" class="tabcontent">
+        <div class="card">
+          <div class="header">Device Control</div>
+          <div class="subheader" style="margin-bottom: 0.75rem;">Maintenance actions for rebooting or resetting stored files</div>
+          <div class="grid-cols3">
+            <div>
+              <svg class="svgCols">
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="reset" class="midText" text-anchor="middle" dominant-baseline="middle">Reboot ESP</text>
+              </svg>
+            </div>
+            <div>
+              <svg class="svgCols">
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="deldata" class="midText" text-anchor="middle" dominant-baseline="middle">Reload /data</text>
+              </svg>
+            </div>
+            <div>
+              <svg class="svgCols">
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="clear" class="midText" text-anchor="middle" dominant-baseline="middle">Clear NVS</text>
+              </svg>
+            </div>
+            <div class="cfgTitle">
+              <div class="header">Configuration Sections</div>
+              <div class="subheader">Select a category to view or modify settings (press Save to persist changes)</div>
+            </div>
+          </div>
+          <div class="grid-cols4" style="margin-top: 0.75rem;">
+            <div>
+              <svg class="svgCols">
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="wifi" class="midText" text-anchor="middle" dominant-baseline="middle">Network</text>
+              </svg>
+            </div>
+            <div>
+              <svg class="svgCols">
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="settings" class="midText" text-anchor="middle" dominant-baseline="middle">Settings</text>
+              </svg>
+            </div>
+            <div>
+              <svg class="svgCols">
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="ethernet" class="midText" text-anchor="middle" dominant-baseline="middle">Ethernet</text>
+              </svg>
+            </div>
+            <div>
+              <svg class="svgCols">
+                <rect class="buttonRect" tabindex="0"/>
+                <text id="save" class="midText" text-anchor="middle" dominant-baseline="middle">Save</text>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="config-group" id="Cfg"></div>
       </div>
     </div>
 
-    <div id="ShowLog" class="tabcontent">
-      <br>
-      <div class="grid-cols4">
-        <div class="input-group" id="dbg-group" style="align-items: center; grid-column: span 2">
-          <label for="dbgVerbose" class="header" title="Set verbose logging">Verbose:</label>
-          <div class="switch">
-            <input id="dbgVerbose" type="checkbox">
-            <label title="Outputs additional information to log" class="slider" for="dbgVerbose"></label>
-          </div>
-        </div>
-        <div>
-          <svg>
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="showsys" class="midText">System</text>
-          </svg>
-        </div>
-        <br>
-        <div style="grid-column: span 4"><br></div>
-        <div>
-          <svg>
-            <rect class="buttonRect" tabindex="0"/>
-            <text class="local" id="refreshLog">Refresh Log</text>
-          </svg>
-        </div>
-        <div>
-          <svg>
-            <rect class="buttonRect" tabindex="0"/>
-            <text class="local" id="clearLog">Clear Log</text>
-          </svg>
-        </div>
-        <div>
-          <svg>
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="save" class="midText">Save</text>
-          </svg>
-        </div>
-        <div>
-          <svg>
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="reset" class="midText">Reboot ESP</text>
-          </svg>
-        </div>
-      </div>
-      <br>
-      <div id="appLog"></div>
-      <br>
-    </div>
-    
-    <div id="EditConfig" class="tabcontent">
-      <br>
-      <div class="header">Control</div>
-      <br>
-      <div class="grid-cols3">
-        <div>
-          <svg class="svgCols">
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="reset" class="midText">Reboot ESP</text>
-          </svg>
-        </div>
-        <div>
-          <svg class="svgCols">
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="deldata" class="midText">Reload /data</text>
-          </svg>
-        </div>
-        <div>
-          <svg class="svgCols">
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="clear" class="midText">Clear NVS</text>
-          </svg>
-        </div>
-        <div class="cfgTitle">
-          <br>
-          <div class="header">Settings</div>
-          <div class="subheader">Press a button to view or modify settings (changed values are not validated)</div>
-          <div class="subheader">Press Save button to make changes permanent</div>
-          <br>
-        </div>
-      </div>
-      <div class="grid-cols4">
-        <div>
-          <svg class="svgCols">
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="wifi" class="midText">Network</text>
-          </svg>
-        </div>
-        <div>
-          <svg class="svgCols">
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="settings" class="midText">Settings</text>
-          </svg>
-        </div>
-        <div>
-          <svg class="svgCols">
-            <rect class="buttonRect" tabindex="0"/>
-            <text id="ethernet" class="midText">Ethernet</text>
-          </svg>
-        </div>
-        <div>
-          <svg class="svgCols">
-            <rect class="buttonRect" tabindex="0"/>
-      	    <text id="save" class="midText">Save</text>
-          </svg>
-        </div>
-      </div>
-      <div>
-        <p class='config-group' id='Cfg'></p>
-      </div>
-    </div>
-           
     <div class="alertMsg">
       <span id="alertText"></span>
     </div>
-    
+
     <script>
       'use strict'
 
       let refreshInterval = 5000;
       let appClock = Math.ceil(Date.now() / 1000);
+
+      // Section headers inserted into dynamically generated config/main tables
+      const tableSections = {
+        // Main AdBlocker tab
+        allowCnt: 'Statistics',
+        fileURLc: 'Blocklist Configuration',
+        uLoad: 'Actions',
+        zzzAdblockOn: 'Service Control',
+        // Edit Config tabs
+        AP_Pass: 'Access Point',
+        Auth_Name: 'Web Authentication',
+        ST_Pass: 'Wi-Fi Station',
+        ST_gw: 'IP & DNS',
+        alarmHour: 'Blocklist & System',
+        lampActiveHi: 'Status LED',
+        ethCS: 'Ethernet Interface'
+      };
+
+      let lastActionKey = null;
+      let actionFeedbackTimer = null;
+
+      function setActionFeedback(key, msg, state = '') {
+        if (!key) return;
+        const textEl = document.getElementById(key);
+        if (!textEl) return;
+        const cell = textEl.closest('td');
+        if (!cell) return;
+        let badge = cell.querySelector('.action-feedback');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'action-feedback';
+          cell.appendChild(badge);
+        }
+        badge.className = 'action-feedback' + (state ? ' ' + state : '');
+        badge.textContent = msg;
+        if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
+        if (state) {
+          actionFeedbackTimer = setTimeout(() => {
+            if (badge && badge.parentNode) badge.remove();
+          }, 8000);
+        }
+      }
+
+      function onAlertMessage(msg) {
+        if (!lastActionKey) return;
+        const lower = msg.toLowerCase();
+        let state = 'ok';
+        if (lower.includes('not ') || lower.includes('no domain') || lower.includes('failed') || lower.includes('too long')) state = 'err';
+        else if (lower.includes('duplicate') || lower.includes('stopped') || lower.includes('in progress')) state = 'warn';
+        setActionFeedback(lastActionKey, msg, state);
+      }
 
       function processStatus(dest, key, value, fromUser = true) {
         // process change to status value
@@ -548,8 +739,18 @@
           else if (key == "settings") getConfig("01");
           else if (key == "ethernet") getConfig("0123");
           else if (key == "fileURLn") return;
-          else if (key == "xStop") { if (fromUser) sendControl(key, value); return; }
-          else if (key == "zLoad" || key == "uLoad" || key == "vLoad" || key == "wLoad") { if (fromUser) getLoadURL(key); return; }
+          else if (key == "xStop" || key == "zzCustom") {
+            if (fromUser) {
+              lastActionKey = key;
+              setActionFeedback(key, 'Sending...');
+              sendControl(key, value);
+            }
+            return;
+          }
+          else if (key == "zLoad" || key == "uLoad" || key == "vLoad" || key == "wLoad") {
+            if (fromUser) getLoadURL(key);
+            return;
+          }
           // remaining changes are passed thru to app
           else if (fromUser) sendControl(key, value); 
         }
@@ -557,9 +758,15 @@
       }
       
       function getLoadURL(key) {
-        // use value in new URL unless blank
-        if ($('#fileURLn').value.length) sendControl(key, $('#fileURLn').value);
-        else sendControl(key, $('#fileURLc').value);
+        lastActionKey = key;
+        const inputVal = $('#fileURLn').value.trim();
+        if (key === 'zLoad') {
+          setActionFeedback(key, 'Reloading...');
+          sendControl(key, inputVal.length ? inputVal : $('#fileURLc').value);
+        } else {
+          setActionFeedback(key, 'Checking...');
+          sendControl(key, inputVal);
+        }
       }
       
 
@@ -578,7 +785,7 @@
       const doRefreshTimer = true;
       const doCustomSync = false;
       const doHeartbeat = false;
-      const doInitSSE = false;
+      const doInitSSE = true;
 
       const scriptElement = document.createElement('script');
       scriptElement.src = (window.location.protocol === "file:") ? '../../CommonMaster/common.js' : '/web?common.js';
