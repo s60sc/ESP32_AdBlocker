@@ -549,6 +549,22 @@
         transition: background 0.15s;
       }
 
+      .action-link {
+        display: inline-block;
+        margin-left: 0.65rem;
+        color: var(--buttonReady);
+        font-size: 0.86rem;
+        font-weight: 600;
+        text-decoration: none;
+        vertical-align: middle;
+        white-space: nowrap;
+      }
+
+      .action-link:hover {
+        color: var(--buttonHover);
+        text-decoration: underline;
+      }
+
       .svgCols {
         width: 100%;
         max-width: 160px;
@@ -822,7 +838,10 @@
             </tr>
             <tr>
               <td>Clear custom blocklist</td>
-              <td><button type="button" class="action-btn" id="zzCustom" value="1">Clear custom domains</button></td>
+              <td>
+                <button type="button" class="action-btn" id="zzCustom" value="1">Clear custom domains</button>
+                <a class="action-link" href="/web?custom.txt" target="_blank" rel="noopener">View custom domains &#8599;</a>
+              </td>
             </tr>
             <tr class="section-header"><td colspan="2">Service Control</td></tr>
             <tr>
