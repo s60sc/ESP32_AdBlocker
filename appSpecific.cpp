@@ -271,7 +271,7 @@ static bool downloadBlockList() {
           else LOG_WRN("File size unknown");
           LOG_INF("%s memory available for download", fmtStorageSize);
           if (left > storageSize) LOG_WRN("File is larger than memory, may get truncated");
-          WiFiClient* stream = https.getStreamPtr(); // stream data to client
+          NetworkClient* stream = https.getStreamPtr(); // stream data to client
           uint32_t lastRead = millis();
           size_t lineCnt = 0;
 
@@ -762,7 +762,7 @@ static bool loadBlockList(const char* reason) {
         if (useSnap) restored = loadSnapshot();
         setLamp(DevStatus::OFFLINE); //Change Status LED
         if (itemsLoaded <= 2) {
-          if (!strlen(ST_SSID))
+          if (netMode == 0 && !strlen(ST_SSID))
             LOG_ALT("First-time setup: set router SSID/Password in Network Settings");
           else {
             snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Blocklist URL %s failed to load", fileURL);
@@ -774,7 +774,7 @@ static bool loadBlockList(const char* reason) {
         }
       } else if (itemsLoaded <= 2) {
         // snapshot not enabled / available
-        if (!strlen(ST_SSID)) {
+        if (netMode == 0 && !strlen(ST_SSID)) {
           LOG_ALT("First-time setup: set router SSID/Password in Network Settings");
         } else {
           snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Blocklist URL %s failed to load", fileURL);
@@ -785,8 +785,9 @@ static bool loadBlockList(const char* reason) {
       }
       loadCustom();  // apply user provided rules either way
     } else {
-      LOG_WRN("Network/time not ready (%s)", strlen(ST_SSID) ? (netIsConnected() ? "clock" : "wifi") : "unconfigured");
-      if (!strlen(ST_SSID)) setLamp(DevStatus::AP_MODE); // prepDNS re-asserts anyway
+      bool unconfiguredWifi = (netMode == 0 && !strlen(ST_SSID));
+      LOG_WRN("Network/time not ready (%s)", unconfiguredWifi ? "unconfigured" : (netIsConnected() ? "clock" : (netMode > 0 ? "ethernet" : "wifi")));
+      if (unconfiguredWifi) setLamp(DevStatus::AP_MODE); // prepDNS re-asserts anyway
       else if (itemsLoaded > 2) setLamp(DevStatus::OFFLINE);   // cached list serving
       else setLamp(DevStatus::FAILURE);
     }
@@ -820,9 +821,9 @@ bool appSetup() {
   resetBlocklistStorage();
   updateConfigVect("blockCnt", "0");
   updateConfigVect("allowCnt", "0");
-  if (!strlen(ST_SSID)) setLamp(DevStatus::AP_MODE);   // setup-needed state ASAP
+  if (netMode == 0 && !strlen(ST_SSID)) setLamp(DevStatus::AP_MODE);   // setup-needed state ASAP
   loadBlockList("Initial"); // best effort - DNS starts regardless
-  if (!strlen(ST_SSID)) setLamp(DevStatus::AP_MODE); //Change Status LED
+  if (netMode == 0 && !strlen(ST_SSID)) setLamp(DevStatus::AP_MODE); //Change Status LED
   prepDNS();
   appSetupDone = true;
   return true;
@@ -980,8 +981,13 @@ formatIfMountFailed~0~1~C~Format File System on Failure
 wifiTimeoutSecs~30~0~N~WiFi connect timeout (secs)
 usePing~1~0~C~Use ping
 alarmHour~4~1~N~Hour of Day when Run Blocklist Update
-useSnap~0~1~C~Store copy of blocklist in flash
-maxDomains~250~1~N~Max number of domains (* 1000)
+)~"
+#if CONFIG_IDF_TARGET_ESP32P4
+"useSnap~1~1~C~Store copy of blocklist in flash\n"
+#else
+"useSnap~0~1~C~Store copy of blocklist in flash\n"
+#endif
+R"~(maxDomains~250~1~N~Max number of domains (* 1000)
 minMemory~128~1~N~Minimum free memory (KB)
 maxDomLen~100~1~N~Max length of domain name
 allowCnt~0~2~D~Allowed domains
@@ -989,8 +995,13 @@ blockCnt~0~2~D~Blocked domains
 fileURLc~https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts~2~D~Current URL for blocklist file
 fileURLn~~2~X~Enter new URL for blocklist file or domain
 loadProg~0~2~D~Blocklist download progress
-netMode~0~3~S:WiFi:Ethernet:Eth+AP~Network interface selection
-wLoad~Check Domain~2~A~Check if domain name is blocked
+)~"
+#if CONFIG_IDF_TARGET_ESP32P4
+"netMode~1~3~S:WiFi:Ethernet:Eth+AP~Network interface selection\n"
+#else
+"netMode~0~3~S:WiFi:Ethernet:Eth+AP~Network interface selection\n"
+#endif
+R"~(wLoad~Check Domain~2~A~Check if domain name is blocked
 uLoad~Add Domain~2~A~Add to blocklist
 vLoad~Del Domain~2~A~Delete from blocklist
 zLoad~Reload~2~A~Reload Blocklist

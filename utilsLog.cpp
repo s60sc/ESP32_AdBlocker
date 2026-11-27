@@ -301,6 +301,8 @@ static void boardInfo() {
 
 #if defined(CONFIG_SPIRAM_MODE_OCT)
   const char* psramMode = "OPI";
+#elif defined(CONFIG_SPIRAM_MODE_HEX)
+  const char* psramMode = "HEX";
 #else 
   const char* psramMode = "QSPI";
 #endif

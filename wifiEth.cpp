@@ -68,9 +68,31 @@ char ntpServer[MAX_HOST_LEN] = "pool.ntp.org";
 
 int netMode = 0; // 0=WiFi only, 1=Ethernet only, 2=Ethernet+AP
 
+#if CONFIG_IDF_TARGET_ESP32P4
+// Waveshare ESP32-P4-NANO onboard IP101GRI RMII PHY
+#ifndef ETH_PHY_TYPE
+#define ETH_PHY_TYPE  ETH_PHY_IP101
+#endif
+#ifndef ETH_PHY_ADDR
+#define ETH_PHY_ADDR  1
+#endif
+#ifndef ETH_PHY_MDC
+#define ETH_PHY_MDC   31
+#endif
+#ifndef ETH_PHY_MDIO
+#define ETH_PHY_MDIO  52
+#endif
+#ifndef ETH_PHY_POWER
+#define ETH_PHY_POWER 51
+#endif
+#ifndef ETH_CLK_MODE
+#define ETH_CLK_MODE  EMAC_CLK_EXT_IN
+#endif
+#else
 // LAN8720
 #define ETH_PHY_ADDR  0 
 #define ETH_CLK_MODE  ETH_CLOCK_GPIO0_IN // external clock from crystal oscillator
+#endif
 
 static const char* wifiModes[] = {"NULL", "STA", "AP", "STA+AP", "NAN"};
 
@@ -262,9 +284,12 @@ static void predefEthPins() {
 }
 
 static bool startEth(bool firstcall) {
-  // Initialize Ethernet (W5500) via SPI, only viable on ESP32-S3 board
-  // Internal on ESP32-S3-ETH board, or use separate external board
+  // Initialize Ethernet (W5500 via SPI on S3, LAN8720 RMII on ESP32, IP101GRI RMII on ESP32-P4)
+#if CONFIG_IDF_TARGET_ESP32P4
+  if (true) {
+#else
   if (ethCS != -1) {
+#endif
     if (!firstcall) {
       // reset after ping failure
       ETH.end();
@@ -304,6 +329,20 @@ static bool startEth(bool firstcall) {
       return false;
     }
  #endif
+#endif
+#if CONFIG_IDF_TARGET_ESP32P4
+    int mdc = (ethCS >= 0) ? ethCS : ETH_PHY_MDC;
+    int mdio = (ethInt >= 0) ? ethInt : ETH_PHY_MDIO;
+    int pwr = (ethRst >= 0) ? ethRst : ETH_PHY_POWER;
+    if (!ETH.begin(ETH_PHY_TYPE,
+                   ETH_PHY_ADDR,
+                   mdc,
+                   mdio,
+                   pwr,
+                   ETH_CLK_MODE)) {
+      LOG_WRN("Ethernet IP101 init failed");
+      return false;
+    }
 #endif
 
     // Apply static IP to Ethernet if configured in existing fields
@@ -481,8 +520,8 @@ static bool startWifi(bool firstcall = true) { // firstcall: true on initial inv
     }
   }
   
-  // Start mDNS only on the ESP32-S3 and only if the Station obtained a valid IP address.
-#if CONFIG_IDF_TARGET_ESP32S3
+  // Start mDNS on ESP32-S3 / ESP32-P4 if the Station obtained a valid IP address.
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
   if (netMode == 0) {
     if ((uint32_t)WiFi.localIP() != 0) {
       setupMdnsHost();
@@ -513,14 +552,16 @@ static bool waitForNetworkConnection(uint32_t timeoutMs) {
     if (netMode > 0 && ETH.linkUp() && ETH.localIP() != IPAddress(0, 0, 0, 0)) {
       return true;
     }
-    // Check WiFi STA
-    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-      return true;
-    }
-    // Check WiFi AP (Network is ready as soon as AP is started and has an IP)
-    if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
-      if (WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
+    if (netMode != 1) {
+      // Check WiFi STA
+      if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
         return true;
+      }
+      // Check WiFi AP (Network is ready as soon as AP is started and has an IP)
+      if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
+        if (WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
+          return true;
+        }
       }
     }
     // Yield to FreeRTOS scheduler, prevent watchdog trigger
@@ -544,10 +585,12 @@ bool startNetwork(bool firstcall) {
     // Ethernet or Eth+AP
     if (startEth(firstcall)) {
       if (netMode == 1) {
-        // Quiet mode: stop WiFi/BLE radios for RF silence
+        // Quiet mode: stop WiFi/BLE radios for RF silence (skip on P4 to avoid waking C6 via esp-hosted)
+#if !CONFIG_IDF_TARGET_ESP32P4
         WiFi.mode(WIFI_OFF);
 #ifdef APP_BT_ENABLED
         if (btStarted()) btStop();
+#endif
 #endif
         networkReady = true;
       }
@@ -585,7 +628,7 @@ bool startNetwork(bool firstcall) {
 
   // Web server start is a critical step for overall success
   bool webServerReady = false;
-  bool isAPMode = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
+  bool isAPMode = (netMode != 1) && (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
   
   // Always enable the web server when in WiFi Access Point mode
   if (networkReady || isAPMode) {

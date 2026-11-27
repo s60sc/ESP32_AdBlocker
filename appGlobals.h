@@ -60,7 +60,7 @@
 #define INCLUDE_CERTS false   // setupAssist.cpp (if using app https server)
 #define INCLUDE_WEBDAV true   // webDav.cpp (WebDAV protocol)
 
-#ifdef CONFIG_IDF_TARGET_ESP32S3 
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #define SERVER_STACK_SIZE (1024 * 8)
 #define DS18B20_STACK_SIZE (1024 * 2)
 #define STICK_STACK_SIZE (1024 * 4)
