@@ -797,8 +797,9 @@ bool startWebServer() {
   httpd_uri_t statusUri = {.uri = "/status", .method = HTTP_GET, .handler = statusHandler, .user_ctx = NULL};
   httpd_uri_t uploadUri = {.uri = "/upload", .method = HTTP_POST, .handler = uploadHandler, .user_ctx = NULL};
   httpd_uri_t wifiUri = {.uri = "/wifi", .method = HTTP_GET, .handler = setupHandler, .user_ctx = NULL};
-  httpd_uri_t sseUri = {.uri = "/sse", .method = HTTP_GET, .handler = sseHandler, .user_ctx = NULL};
-  httpd_uri_t wsUri = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = NULL, .is_websocket = true};
+  // Unused by ESP32_AdBlocker (all UI controls, stats, and logs use plain HTTP)
+  // httpd_uri_t sseUri = {.uri = "/sse", .method = HTTP_GET, .handler = sseHandler, .user_ctx = NULL};
+  // httpd_uri_t wsUri = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = NULL, .is_websocket = true};
   httpd_uri_t sustainUri = {.uri = "/sustain", .method = HTTP_GET, .handler = appSpecificSustainHandler, .user_ctx = NULL};
   httpd_uri_t checkUri = {.uri = "/sustain", .method = HTTP_HEAD, .handler = appSpecificSustainHandler, .user_ctx = NULL};
 
@@ -809,9 +810,9 @@ bool startWebServer() {
     httpd_register_uri_handler(httpServer, &updateUri);
     httpd_register_uri_handler(httpServer, &statusUri);
     httpd_register_uri_handler(httpServer, &uploadUri);
-    httpd_register_uri_handler(httpServer, &sseUri);
+    // httpd_register_uri_handler(httpServer, &sseUri);
     httpd_register_uri_handler(httpServer, &wifiUri);
-    httpd_register_uri_handler(httpServer, &wsUri);
+    // httpd_register_uri_handler(httpServer, &wsUri);
     httpd_register_uri_handler(httpServer, &sustainUri);
     httpd_register_uri_handler(httpServer, &checkUri);
     httpd_register_err_handler(httpServer, HTTPD_404_NOT_FOUND, customOrNotFoundHandler);
