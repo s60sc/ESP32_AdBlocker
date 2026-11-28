@@ -876,6 +876,13 @@
           }
           else if (key == "clearLog") clearLog();
           else if (key == "refreshLog") getLog();
+          else if (key == "showsys" || key == "dbgVerbose") {
+            if (fromUser) {
+              sendControl(key, value);
+              setTimeout(() => getLog(), 400);
+            }
+            return;
+          }
           else if (key == "reset") saveChanges();
           else if (key == "refreshVal") refreshInterval = value * 1000; 
           else if (key == "clockUTC") { appClock = value; checkTime(value); }
