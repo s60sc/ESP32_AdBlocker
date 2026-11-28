@@ -889,11 +889,7 @@
           else if (key == "ethernet") getConfig("0123");
           else if (key == "fileURLn") return;
           else if (key == "xStop" || key == "zzCustom") {
-            if (fromUser) {
-              lastActionKey = key;
-              setActionFeedback(key, 'Sending...');
-              sendControl(key, value);
-            }
+            if (fromUser) sendAction(key, value, 'Sending...');
             return;
           }
           else if (key == "zLoad" || key == "uLoad" || key == "vLoad" || key == "wLoad") {
@@ -905,16 +901,30 @@
         }
         else if (dest == CLASS) {}
       }
+
+      async function sendAction(key, value, pendingMsg) {
+        lastActionKey = key;
+        setActionFeedback(key, pendingMsg);
+        try {
+          const encodedValue = encodeURIComponent(value).replace(/#/g, '%23');
+          const response = await fetch(encodeURI('/control?' + key + '=') + encodedValue);
+          if (response.ok) {
+            const reply = (await response.text()).trim();
+            if (reply) showAlert(reply);
+          } else {
+            setActionFeedback(key, 'Request failed (' + response.status + ')', 'err');
+          }
+        } catch (err) {
+          setActionFeedback(key, 'Connection error', 'err');
+        }
+      }
       
       function getLoadURL(key) {
-        lastActionKey = key;
         const inputVal = $('#fileURLn').value.trim();
         if (key === 'zLoad') {
-          setActionFeedback(key, 'Reloading...');
-          sendControl(key, inputVal.length ? inputVal : $('#fileURLc').value);
+          sendAction(key, inputVal.length ? inputVal : $('#fileURLc').value, 'Reloading...');
         } else {
-          setActionFeedback(key, 'Checking...');
-          sendControl(key, inputVal);
+          sendAction(key, inputVal, 'Checking...');
         }
       }
       

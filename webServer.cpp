@@ -17,6 +17,7 @@ static int fdWs = -1; // websocket sockfd
 static httpd_handle_t sseSocketHD = NULL; // SSE support
 static int sseSocketFD = -1;
 static SemaphoreHandle_t sseMutex = NULL;
+char lastActionResult[160] = "";
 bool useHttps = false;
 bool useSecure = false;
 bool heartBeatDone = false;
@@ -343,9 +344,10 @@ static esp_err_t controlHandler(httpd_req_t *req) {
     return ESP_OK;
   }
   // if not handled by appSpecificWebHandler(), try updateStatus()
+  lastActionResult[0] = 0;
   if (appSpecificWebHandler(req, variable, value) == ESP_FAIL) {
     updateStatus(variable, value);
-    httpd_resp_sendstr(req, NULL);
+    httpd_resp_sendstr(req, lastActionResult[0] ? lastActionResult : NULL);
   }  
   return ESP_OK;
 }
