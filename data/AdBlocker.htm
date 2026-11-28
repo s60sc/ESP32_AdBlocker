@@ -922,7 +922,10 @@
       function getLoadURL(key) {
         const inputVal = $('#fileURLn').value.trim();
         if (key === 'zLoad') {
-          sendAction(key, inputVal.length ? inputVal : $('#fileURLc').value, 'Reloading...');
+          // Only treat input as a new blocklist URL if it starts with http:// or https://
+          // so a leftover domain name (e.g. "example.com") does not overwrite fileURLc.
+          const isUrl = /^https?:\/\//i.test(inputVal);
+          sendAction(key, isUrl ? inputVal : $('#fileURLc').value, 'Reloading...');
         } else {
           sendAction(key, inputVal, 'Checking...');
         }
