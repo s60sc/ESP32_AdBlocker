@@ -148,7 +148,9 @@
         };
         
        function sendWsMsg(msg, index = 0) {
+          if (!doInitWebSocket) return false;
           if (wsSkt[index] == null) initWebSocket(index);
+          if (wsSkt[index] == null) return false;
           if (wsSkt[index].readyState !== WebSocket.OPEN) {
             try {
               waitForOpenWs(wsSkt[index]);
@@ -219,6 +221,7 @@
 
         function openTab(e) {
           // control tab viewing
+          if (!e.name) return;
           $$('.tabcontent').forEach(el => { el.style.display = "none"; });
           $('#' + e.name).style.display = "inherit";  
           $$('.tablinks').forEach(el => {el.classList.remove("active");});
