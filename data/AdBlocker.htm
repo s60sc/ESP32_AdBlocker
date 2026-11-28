@@ -637,7 +637,77 @@
 
     <div class="container">
       <div id="AdBlocker" class="tabcontent" style="display:block">
-        <div class="config-group" id="Main012"></div>
+        <div class="config-group" id="Main012">
+          <div class="stats-card">
+            <div class="stats-title">Statistics</div>
+            <div class="stats-grid">
+              <div class="stat-box">
+                <div class="stat-label">Allowed domains</div>
+                <div id="allowCnt" class="displayonly stat-value">0</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-label">Blocked domains</div>
+                <div id="blockCnt" class="displayonly stat-value">0</div>
+              </div>
+            </div>
+          </div>
+          <table>
+            <tr class="section-header"><td colspan="2">Blocklist Configuration</td></tr>
+            <tr>
+              <td>Current blocklist URL</td>
+              <td><input type="text" class="configItem readonly-field" id="fileURLc" value="" readonly></td>
+            </tr>
+            <tr>
+              <td>
+                Domain name or new blocklist URL
+                <span class="field-hint">Enter a domain to add, delete, or check &mdash; or a new hosts file URL to reload</span>
+              </td>
+              <td><input type="text" class="configItem nochange" id="fileURLn" placeholder="e.g. ads.example.com or https://.../hosts" value=""></td>
+            </tr>
+            <tr>
+              <td>Blocklist download progress</td>
+              <td><input type="text" class="configItem readonly-field" id="loadProg" value="" readonly></td>
+            </tr>
+            <tr class="section-header"><td colspan="2">Actions</td></tr>
+            <tr>
+              <td>Add to blocklist</td>
+              <td><button type="button" class="action-btn" id="uLoad" value="1">Add domain to blocklist</button></td>
+            </tr>
+            <tr>
+              <td>Delete from blocklist</td>
+              <td><button type="button" class="action-btn" id="vLoad" value="1">Delete specific domain name</button></td>
+            </tr>
+            <tr>
+              <td>Check domain</td>
+              <td><button type="button" class="action-btn" id="wLoad" value="1">Check if domain is blocked</button></td>
+            </tr>
+            <tr>
+              <td>Stop download</td>
+              <td><button type="button" class="action-btn" id="xStop" value="1">Stop blocklist download</button></td>
+            </tr>
+            <tr>
+              <td>Reload blocklist</td>
+              <td><button type="button" class="action-btn" id="zLoad" value="1">Reload blocklist</button></td>
+            </tr>
+            <tr>
+              <td>Clear custom blocklist</td>
+              <td>
+                <button type="button" class="action-btn" id="zzCustom" value="1">Clear custom domains</button>
+                <a class="action-link" href="/web?custom.txt" target="_blank" rel="noopener">View custom domains &#8599;</a>
+              </td>
+            </tr>
+            <tr class="section-header"><td colspan="2">Service Control</td></tr>
+            <tr>
+              <td>Enable AdBlocker</td>
+              <td>
+                <div class="switch">
+                  <input type="checkbox" class="configItem" id="zzzAdblockOn" value="0">
+                  <label class="slider" for="zzzAdblockOn"></label>
+                </div>
+              </td>
+            </tr>
+          </table>
+        </div>
       </div>
 
       <div id="ShowLog" class="tabcontent">
@@ -767,97 +837,6 @@
         ethCS: 'Ethernet Interface'
       };
 
-      function escHtml(val) {
-        return String(val ?? '')
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;');
-      }
-
-      function buildCustomTable(configData, cfgGroup, divShowData) {
-        if (cfgGroup !== '012') return false;
-
-        const allowCnt = escHtml(configData.allowCnt ?? '0');
-        const blockCnt = escHtml(configData.blockCnt ?? '0');
-        const fileURLc = escHtml(configData.fileURLc ?? '');
-        const loadProg = escHtml(configData.loadProg ?? '');
-        const adblockOn = Number(configData.zzzAdblockOn) === 1;
-
-        divShowData.innerHTML = `
-          <div class="stats-card">
-            <div class="stats-title">Statistics</div>
-            <div class="stats-grid">
-              <div class="stat-box">
-                <div class="stat-label">Allowed domains</div>
-                <div id="allowCnt" class="displayonly stat-value">${allowCnt}</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-label">Blocked domains</div>
-                <div id="blockCnt" class="displayonly stat-value">${blockCnt}</div>
-              </div>
-            </div>
-          </div>
-          <table>
-            <tr class="section-header"><td colspan="2">Blocklist Configuration</td></tr>
-            <tr>
-              <td>Current blocklist URL</td>
-              <td><input type="text" class="configItem readonly-field" id="fileURLc" value="${fileURLc}" readonly></td>
-            </tr>
-            <tr>
-              <td>
-                Domain name or new blocklist URL
-                <span class="field-hint">Enter a domain to add, delete, or check — or a new hosts file URL to reload</span>
-              </td>
-              <td><input type="text" class="configItem nochange" id="fileURLn" placeholder="e.g. ads.example.com or https://.../hosts" value=""></td>
-            </tr>
-            <tr>
-              <td>Blocklist download progress</td>
-              <td><input type="text" class="configItem readonly-field" id="loadProg" value="${loadProg}" readonly></td>
-            </tr>
-            <tr class="section-header"><td colspan="2">Actions</td></tr>
-            <tr>
-              <td>Add to blocklist</td>
-              <td><button type="button" class="action-btn" id="uLoad" value="1">Add domain to blocklist</button></td>
-            </tr>
-            <tr>
-              <td>Delete from blocklist</td>
-              <td><button type="button" class="action-btn" id="vLoad" value="1">Delete specific domain name</button></td>
-            </tr>
-            <tr>
-              <td>Check domain</td>
-              <td><button type="button" class="action-btn" id="wLoad" value="1">Check if domain is blocked</button></td>
-            </tr>
-            <tr>
-              <td>Stop download</td>
-              <td><button type="button" class="action-btn" id="xStop" value="1">Stop blocklist download</button></td>
-            </tr>
-            <tr>
-              <td>Reload blocklist</td>
-              <td><button type="button" class="action-btn" id="zLoad" value="1">Reload blocklist</button></td>
-            </tr>
-            <tr>
-              <td>Clear custom blocklist</td>
-              <td>
-                <button type="button" class="action-btn" id="zzCustom" value="1">Clear custom domains</button>
-                <a class="action-link" href="/web?custom.txt" target="_blank" rel="noopener">View custom domains &#8599;</a>
-              </td>
-            </tr>
-            <tr class="section-header"><td colspan="2">Service Control</td></tr>
-            <tr>
-              <td>Enable AdBlocker</td>
-              <td>
-                <div class="switch">
-                  <input type="checkbox" class="configItem" id="zzzAdblockOn" value="${adblockOn ? '1' : '0'}"${adblockOn ? ' checked' : ''}>
-                  <label class="slider" for="zzzAdblockOn"></label>
-                </div>
-              </td>
-            </tr>
-          </table>
-        `;
-        return true;
-      }
-
       let lastActionKey = null;
       let actionFeedbackTimer = null;
 
@@ -955,13 +934,14 @@
       const doRefreshTimer = true;
       const doCustomSync = false;
       const doHeartbeat = false;
-      const doInitSSE = true;
+      const doInitSSE = false;
 
       const scriptElement = document.createElement('script');
       scriptElement.src = (window.location.protocol === "file:") ? '../../CommonMaster/common.js' : '/web?common.js';
       document.body.appendChild(scriptElement);
 
       window.addEventListener('load', function() {
+        isBuilt = true; // AdBlocker tab markup is static in HTML; only update values in-place
         initialise();
         getConfig('012');
       });

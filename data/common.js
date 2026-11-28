@@ -784,7 +784,6 @@
           else { 
             // setup different config table
             cfgGroupNow = cfgGroup;
-            if (typeof buildCustomTable === 'function' && buildCustomTable(configData, cfgGroup, divShowData)) return;
             const table = document.createElement("table");
             let tr;
 
