@@ -934,7 +934,7 @@
       const doRefreshTimer = true;
       const doCustomSync = false;
       const doHeartbeat = false;
-      const doInitSSE = false;
+      const doInitSSE = false; // Recommended to keep false: logs/alerts use the existing /ws WebSocket, avoiding an extra persistent socket and SSE LRU eviction errors
 
       const scriptElement = document.createElement('script');
       scriptElement.src = (window.location.protocol === "file:") ? '../../CommonMaster/common.js' : '/web?common.js';
