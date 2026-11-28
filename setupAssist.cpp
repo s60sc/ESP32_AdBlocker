@@ -557,6 +557,7 @@ const char* failPageS_html = R"~(
 const char* failPageE_html = R"~(
     </h2>
     <h3><a href="#" onclick="getLog(); return false;"><button class=styled-button>Check log</button></a></h3>
+    <h3><a href=/control?zLoad=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts><button class=styled-button>Reset Blocklist URL to Default</button></a></h3>
     <h3><a href=/control?reset=1><button class=styled-button>Reboot ESP after fix</button></a></h3>
     <h3><a href=/web?OTA.htm><button class=styled-button>OTA Update</button></a></h3>
     <div id="appLog"></div>
