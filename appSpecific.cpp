@@ -238,7 +238,24 @@ bool isDomainBlocked(const char* domainName) {
       if (blocked) strlcpy(lastBlockedDomain, lookupName, sizeof(lastBlockedDomain));
     }
     blUnlock();
-    blocked ? ++blockCnt : ++allowCnt;
+
+    // Mitigate stat overcounting:
+    // 1. Skip reverse-DNS PTR lookups (*.in-addr.arpa / *.ip6.arpa) which are not real domain visits.
+    // 2. Deduplicate back-to-back queries for the same domain within 1s (e.g. simultaneous IPv4 A + IPv6 AAAA).
+    const size_t normLen = strlen(normName);
+    const bool isPtrLookup = (normLen > 13 && !strcmp(normName + normLen - 13, ".in-addr.arpa")) ||
+                             (normLen > 9 && !strcmp(normName + normLen - 9, ".ip6.arpa"));
+    if (!isPtrLookup) {
+      static char lastCountedDomain[IN_FILE_NAME_LEN] = "";
+      static uint32_t lastCountedMs = 0;
+      uint32_t nowMs = millis();
+      if (strcmp(lookupName, lastCountedDomain) != 0 || (nowMs - lastCountedMs) > 1000) {
+        blocked ? ++blockCnt : ++allowCnt;
+        strlcpy(lastCountedDomain, lookupName, sizeof(lastCountedDomain));
+        lastCountedMs = nowMs;
+      }
+    }
+
     uint64_t checkTime = micros() - usElapsed;
     LOG_VRB("Check %s %s in %lluus", normName, (blocked) ? "*Blocked*" : "Allowed", checkTime);
   }
