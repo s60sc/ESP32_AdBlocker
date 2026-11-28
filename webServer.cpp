@@ -599,6 +599,7 @@ bool wsAsyncSendText(const char* wsData) {
   if (checkWsSocketStatus()) {
     // send if connection active
     httpd_ws_frame_t wsPkt;
+    memset(&wsPkt, 0, sizeof(httpd_ws_frame_t));
     wsPkt.payload = (uint8_t*)wsData;
     wsPkt.len = strlen(wsData);
     wsPkt.type = HTTPD_WS_TYPE_TEXT;
