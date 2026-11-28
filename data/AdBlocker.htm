@@ -939,12 +939,12 @@
       
       // common script config
       const doCustomInit = false;
-      const doInitWebSocket = true;
+      const doInitWebSocket = false; // Disabled: all AdBlocker UI controls, stats, and logs use plain HTTP (/control, /status)
       const doLoadStatus = false;
       const doRefreshTimer = true;
       const doCustomSync = false;
       const doHeartbeat = false;
-      const doInitSSE = false; // Recommended to keep false: logs/alerts use the existing /ws WebSocket, avoiding an extra persistent socket and SSE LRU eviction errors
+      const doInitSSE = false; // Disabled: avoids extra persistent socket and SSE LRU eviction errors
 
       const scriptElement = document.createElement('script');
       scriptElement.src = (window.location.protocol === "file:") ? '../../CommonMaster/common.js' : '/web?common.js';

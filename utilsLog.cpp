@@ -575,14 +575,12 @@ static void logTask(void *pvParameters) {
     }
     if (e->level == LOG_LEVEL_COMMAND) {
       msgFull[msgLen] = 0;
-      wsAsyncSendText(msgFull); // send command to browser
     } else {
       // ensure have newline and terminator for overlong msg
       msgFull[MAX_OUT_FULL - 2] = '\n'; 
       msgFull[MAX_OUT_FULL - 1] = 0; 
       // output message to various recipients
       if (msgLen > 1) { // skips progress markers
-        wsAsyncSendText(msgFull); // output log message to browser
         if (msgFull[msgLen - 2] == '~') msgFull[msgLen - 2] = ' '; // remove '~' if present
       }
       if (monitorOpen && msgLen) {
