@@ -52,6 +52,7 @@
         }
 
         /*********** websocket and SSE functions ***********/
+        // NOTE: WebSocket (/ws) and SSE (/sse) are not used by ESP32_AdBlocker (disabled via doInitWebSocket/doInitSSE = false).
         
         function applyMessageData(msgData) {
           if (msgData instanceof ArrayBuffer) processBuffer(msgData); // app specific
@@ -147,7 +148,9 @@
         };
         
        function sendWsMsg(msg, index = 0) {
+          if (!doInitWebSocket) return false;
           if (wsSkt[index] == null) initWebSocket(index);
+          if (wsSkt[index] == null) return false;
           if (wsSkt[index].readyState !== WebSocket.OPEN) {
             try {
               waitForOpenWs(wsSkt[index]);
@@ -169,12 +172,18 @@
           }, heartbeatInterval);
         }
         
+        let eventSource = null;
+
         // handle Server Sent Events
         function startEventSource() {
           if (doInitSSE) {
+            if (eventSource) {
+              eventSource.close();
+              eventSource = null;
+            }
             // Create a new EventSource instance, pointing to the server's endpoint
-            console.log("sse "+webServer+'/sse');
-            const eventSource = new EventSource(webServer+'/sse');
+            console.log("sse " + webServer + '/sse');
+            eventSource = new EventSource(webServer + '/sse');
 
             // Listen for the 'open' event when the connection is established
             eventSource.addEventListener('open', function(event) {
@@ -193,15 +202,26 @@
             
             // unhandled events
             eventSource.onerror = (err) => {
-              console.error("SSE error:", err);
-            }
+              if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+                console.warn("SSE connection closed, reconnecting...");
+                setTimeout(startEventSource, 5000);
+              }
+            };
           }
         }
+
+        window.addEventListener('beforeunload', () => {
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+        });
 
         /*********** page layout functions ***********/
 
         function openTab(e) {
           // control tab viewing
+          if (!e.name) return;
           $$('.tabcontent').forEach(el => { el.style.display = "none"; });
           $('#' + e.name).style.display = "inherit";  
           $$('.tablinks').forEach(el => {el.classList.remove("active");});
@@ -768,15 +788,8 @@
           else { 
             // setup different config table
             cfgGroupNow = cfgGroup;
-            const table = document.createElement("table"); 
-            // Create table header row from heading names
-            const colHeaders = ['Setting Name', 'Setting Value']; 
-            let tr = table.insertRow(-1); 
-            for (let i = 0; i < colHeaders.length; i++) {
-              let th = document.createElement("th");
-              th.innerHTML = colHeaders[i];
-              tr.appendChild(th);
-            }
+            const table = document.createElement("table");
+            let tr;
 
             // add each setting as a row containing setting label and setting value
             let nextPair = 3;

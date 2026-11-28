@@ -238,7 +238,24 @@ bool isDomainBlocked(const char* domainName) {
       if (blocked) strlcpy(lastBlockedDomain, lookupName, sizeof(lastBlockedDomain));
     }
     blUnlock();
-    blocked ? ++blockCnt : ++allowCnt;
+
+    // Mitigate stat overcounting:
+    // 1. Skip reverse-DNS PTR lookups (*.in-addr.arpa / *.ip6.arpa) which are not real domain visits.
+    // 2. Deduplicate back-to-back queries for the same domain within 1s (e.g. simultaneous IPv4 A + IPv6 AAAA).
+    const size_t normLen = strlen(normName);
+    const bool isPtrLookup = (normLen > 13 && !strcmp(normName + normLen - 13, ".in-addr.arpa")) ||
+                             (normLen > 9 && !strcmp(normName + normLen - 9, ".ip6.arpa"));
+    if (!isPtrLookup) {
+      static char lastCountedDomain[IN_FILE_NAME_LEN] = "";
+      static uint32_t lastCountedMs = 0;
+      uint32_t nowMs = millis();
+      if (strcmp(lookupName, lastCountedDomain) != 0 || (nowMs - lastCountedMs) > 1000) {
+        blocked ? ++blockCnt : ++allowCnt;
+        strlcpy(lastCountedDomain, lookupName, sizeof(lastCountedDomain));
+        lastCountedMs = nowMs;
+      }
+    }
+
     uint64_t checkTime = micros() - usElapsed;
     LOG_VRB("Check %s %s in %lluus", normName, (blocked) ? "*Blocked*" : "Allowed", checkTime);
   }
@@ -270,6 +287,8 @@ DnsResult checkBlocklist(const char* domainName, IPAddress& retIP) {
   return resolveDomainStatus(normName, retIP);
 }
 
+#define ACTION_RESULT(fmt, ...) do { snprintf(lastActionResult, sizeof(lastActionResult), fmt, ##__VA_ARGS__); LOG_ALT(fmt, ##__VA_ARGS__); } while (0)
+
 static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
   // check if user supplied domain name is present or update user supplied name
   char domName[IN_FILE_NAME_LEN];
@@ -277,8 +296,8 @@ static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
   domName[sizeof(domName) - 1] = 0;
 
   if (size_t domLen = formatDomain(domName); domLen > 0) {
-    if (domLen >= maxDomLen) LOG_ALT("Domain name %s is too long to process", domName);
-    else if (!blocklistReady || ((doUpdate || doDelete) && downloading)) LOG_ALT("Blocklist reload in progress, try again shortly");
+    if (domLen >= maxDomLen) ACTION_RESULT("Domain name %s is too long to process", domName);
+    else if (!blocklistReady || ((doUpdate || doDelete) && downloading)) ACTION_RESULT("Blocklist reload in progress, try again shortly");
     else {
       if (doUpdate) { // addition
         blLock();
@@ -298,11 +317,11 @@ static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
             } else reloading = true;
             blUnlock();
             if (added) {
-              if (updateCustomFile(domName, false)) LOG_ALT("Domain name %s IS added to blocklist", domName);
-            } else if (reloading) LOG_ALT("Blocklist reload in progress, try again shortly");
-            else LOG_ALT("Domain name %s NOT added to blocklist as duplicate", domName);
-          } else LOG_ALT("Domain name %s NOT added to blocklist as not resolved", domName);
-        } else LOG_ALT("Domain name %s NOT added to blocklist as duplicate", domName);
+              if (updateCustomFile(domName, false)) ACTION_RESULT("Domain name %s IS added to blocklist", domName);
+            } else if (reloading) ACTION_RESULT("Blocklist reload in progress, try again shortly");
+            else ACTION_RESULT("Domain name %s NOT added to blocklist as duplicate", domName);
+          } else ACTION_RESULT("Domain name %s NOT added to blocklist as not resolved", domName);
+        } else ACTION_RESULT("Domain name %s NOT added to blocklist as duplicate", domName);
       } else {
         // delete or just check
         blLock();
@@ -314,12 +333,12 @@ static void checkDomain(const char* inName, bool doUpdate, bool doDelete) {
         blUnlock();
         if (doDelete) { // deletion
           if (blPtr) {
-            if (updateCustomFile(domName, true)) LOG_ALT("Domain name %s IS deleted", domName);
-          } else LOG_ALT("Domain name %s NOT deleted as not in blocklist", domName);
-        } else LOG_ALT("Domain name %s %s in blocklist", domName, blPtr ? "IS" : "NOT"); // check only
+            if (updateCustomFile(domName, true)) ACTION_RESULT("Domain name %s IS deleted", domName);
+          } else ACTION_RESULT("Domain name %s NOT deleted as not in blocklist", domName);
+        } else ACTION_RESULT("Domain name %s %s in blocklist", domName, blPtr ? "IS" : "NOT"); // check only
       }
     }
-  } else LOG_ALT("No domain name entered");
+  } else ACTION_RESULT("No domain name entered");
 }
 
 static void extractBlocklist() {
@@ -1079,7 +1098,7 @@ bool updateAppStatus(const char* variable, const char* value, bool fromUser) {
   else if (!strcmp(variable, "useSnap")) useSnap = (bool)intVal;
   else if (fromUser && !strcmp(variable, "xStop")) {
     stopLoad = true;
-    LOG_ALT("Blocklist load being stopped");
+    ACTION_RESULT("Blocklist load being stopped");
   }
   // add user supplied domain name to blocklist unless a duplicate or invalid
   else if (fromUser && !strcmp(variable, "uLoad")) checkDomain(value, true, false);
@@ -1102,7 +1121,7 @@ bool updateAppStatus(const char* variable, const char* value, bool fromUser) {
   }
   else if (fromUser && !strcmp(variable, "zzCustom")) {
     STORAGE.remove(CUSTOM_FILE_PATH);
-    LOG_ALT("Deleted custom blocklist file");
+    ACTION_RESULT("Deleted custom blocklist file");
   }
   else if (!strcmp(variable, "zzzAdblockOn")) {
     adBlockOn = (bool)intVal;

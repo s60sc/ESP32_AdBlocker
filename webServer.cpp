@@ -14,8 +14,10 @@ int refreshVal = 5000; // msecs
 
 static httpd_handle_t httpServer = NULL; // web server port
 static int fdWs = -1; // websocket sockfd
-static httpd_handle_t sseSocketHD; // SSE support
-static int sseSocketFD;
+static httpd_handle_t sseSocketHD = NULL; // SSE support
+static int sseSocketFD = -1;
+static SemaphoreHandle_t sseMutex = NULL;
+char lastActionResult[160] = "";
 bool useHttps = false;
 bool useSecure = false;
 bool heartBeatDone = false;
@@ -342,9 +344,10 @@ static esp_err_t controlHandler(httpd_req_t *req) {
     return ESP_OK;
   }
   // if not handled by appSpecificWebHandler(), try updateStatus()
+  lastActionResult[0] = 0;
   if (appSpecificWebHandler(req, variable, value) == ESP_FAIL) {
     updateStatus(variable, value);
-    httpd_resp_sendstr(req, NULL);
+    httpd_resp_sendstr(req, lastActionResult[0] ? lastActionResult : NULL);
   }  
   return ESP_OK;
 }
@@ -390,22 +393,38 @@ bool parseJson(int rxSize) {
   return retAction;
 }
 
+// NOTE: SSE is not used by ESP32_AdBlocker (all UI controls, stats, and logs use plain HTTP).
 static esp_err_t sseHandler(httpd_req_t *req) {
   if (!checkAuth(req)) return ESP_OK;
+  if (sseMutex == NULL) sseMutex = xSemaphoreCreateMutex();
   // enable Server Sent Events
   const char sseHeader[] = "HTTP/1.1 200 OK\r\n"
                           "Cache-Control: no-store\r\n"
                           "Connection: keep-alive\r\n"
                           "Access-Control-Allow-Origin: *\r\n"
-                          "Content-Type: text/event-stream\r\n\r\n";
-  sseSocketHD = req->handle;
-  sseSocketFD = httpd_req_to_sockfd(req);
-  httpd_socket_send(sseSocketHD, sseSocketFD, sseHeader, strlen(sseHeader), 0); 
+                          "Content-Type: text/event-stream\r\n\r\n"
+                          "retry: 5000\r\n\r\n";
+  if (sseMutex && xSemaphoreTake(sseMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+    sseSocketHD = req->handle;
+    sseSocketFD = httpd_req_to_sockfd(req);
+    int res = httpd_socket_send(sseSocketHD, sseSocketFD, sseHeader, strlen(sseHeader), 0);
+    if (res < 0) {
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
+    xSemaphoreGive(sseMutex);
+  }
   return ESP_OK;
 }
 
 static void onClose(httpd_handle_t hd, int fd) {
-  if (fd == sseSocketFD) {
+  if (sseMutex && xSemaphoreTake(sseMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (fd == sseSocketFD) {
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
+    xSemaphoreGive(sseMutex);
+  } else if (fd == sseSocketFD) {
     sseSocketFD = -1;
     sseSocketHD = NULL;
   }
@@ -414,18 +433,29 @@ static void onClose(httpd_handle_t hd, int fd) {
 
 #define SSESEP "\r\n\r\n" // SSE event separator
 void sendSSE(const char* eventType, const char* eventData) {
-  // send event data to browser
-  if (sseSocketFD > 0) {
-    char eventMsg[30];
+  // send event data to browser (serialized across FreeRTOS tasks)
+  if (sseSocketFD <= 0 || sseSocketHD == NULL || sseMutex == NULL) return;
+  if (xSemaphoreTake(sseMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+  if (sseSocketFD > 0 && sseSocketHD != NULL) {
+    char eventMsg[32];
     int msgLen = snprintf(eventMsg, sizeof(eventMsg), "event: %s\ndata: ", eventType);
-    if (msgLen >= sizeof(eventMsg)) msgLen = sizeof(eventMsg) - 1;
+    if (msgLen >= (int)sizeof(eventMsg)) msgLen = sizeof(eventMsg) - 1;
     int res = httpd_socket_send(sseSocketHD, sseSocketFD, eventMsg, msgLen, 0);
-    res = httpd_socket_send(sseSocketHD, sseSocketFD, eventData, strlen(eventData), 0);
-    res = httpd_socket_send(sseSocketHD, sseSocketFD, SSESEP, (sizeof(SSESEP) - 1), 0);
+    if (res >= 0) res = httpd_socket_send(sseSocketHD, sseSocketFD, eventData, strlen(eventData), 0);
+    if (res >= 0) res = httpd_socket_send(sseSocketHD, sseSocketFD, SSESEP, (sizeof(SSESEP) - 1), 0);
     if (res == HTTPD_SOCK_ERR_TIMEOUT) esp_rom_printf("SENDSSE: Timeout/interrupted while using socket\n");
-    if (res == HTTPD_SOCK_ERR_FAIL) esp_rom_printf("SENDSSE: Unrecoverable error while using socket\n");
-    if (res == HTTPD_SOCK_ERR_INVALID) esp_rom_printf("SENDSSE: Invalid arguments %s, %s\n", eventType, eventData);
+    else if (res == HTTPD_SOCK_ERR_FAIL) {
+      esp_rom_printf("SENDSSE: Unrecoverable error while using socket\n");
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
+    else if (res == HTTPD_SOCK_ERR_INVALID) {
+      esp_rom_printf("SENDSSE: Invalid arguments %s, %s\n", eventType, eventData);
+      sseSocketFD = -1;
+      sseSocketHD = NULL;
+    }
   }
+  xSemaphoreGive(sseMutex);
 }
 
 static esp_err_t updateHandler(httpd_req_t *req) {
@@ -572,6 +602,7 @@ bool wsAsyncSendText(const char* wsData) {
   if (checkWsSocketStatus()) {
     // send if connection active
     httpd_ws_frame_t wsPkt;
+    memset(&wsPkt, 0, sizeof(httpd_ws_frame_t));
     wsPkt.payload = (uint8_t*)wsData;
     wsPkt.len = strlen(wsData);
     wsPkt.type = HTTPD_WS_TYPE_TEXT;
@@ -608,6 +639,7 @@ void wsAsyncSendBinary(uint8_t* data, size_t len) {
   } // else ignore
 }
 
+// NOTE: WebSocket (/ws) is not used by ESP32_AdBlocker (all UI controls, stats, and logs use plain HTTP).
 static esp_err_t wsHandler(httpd_req_t *req) {
   // receive websocket data and determine response
   // if a new connection is received, the old connection is closed, but the browser
@@ -765,8 +797,9 @@ bool startWebServer() {
   httpd_uri_t statusUri = {.uri = "/status", .method = HTTP_GET, .handler = statusHandler, .user_ctx = NULL};
   httpd_uri_t uploadUri = {.uri = "/upload", .method = HTTP_POST, .handler = uploadHandler, .user_ctx = NULL};
   httpd_uri_t wifiUri = {.uri = "/wifi", .method = HTTP_GET, .handler = setupHandler, .user_ctx = NULL};
-  httpd_uri_t sseUri = {.uri = "/sse", .method = HTTP_GET, .handler = sseHandler, .user_ctx = NULL};
-  httpd_uri_t wsUri = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = NULL, .is_websocket = true};
+  // Unused by ESP32_AdBlocker (all UI controls, stats, and logs use plain HTTP)
+  // httpd_uri_t sseUri = {.uri = "/sse", .method = HTTP_GET, .handler = sseHandler, .user_ctx = NULL};
+  // httpd_uri_t wsUri = {.uri = "/ws", .method = HTTP_GET, .handler = wsHandler, .user_ctx = NULL, .is_websocket = true};
   httpd_uri_t sustainUri = {.uri = "/sustain", .method = HTTP_GET, .handler = appSpecificSustainHandler, .user_ctx = NULL};
   httpd_uri_t checkUri = {.uri = "/sustain", .method = HTTP_HEAD, .handler = appSpecificSustainHandler, .user_ctx = NULL};
 
@@ -777,9 +810,9 @@ bool startWebServer() {
     httpd_register_uri_handler(httpServer, &updateUri);
     httpd_register_uri_handler(httpServer, &statusUri);
     httpd_register_uri_handler(httpServer, &uploadUri);
-    httpd_register_uri_handler(httpServer, &sseUri);
+    // httpd_register_uri_handler(httpServer, &sseUri);
     httpd_register_uri_handler(httpServer, &wifiUri);
-    httpd_register_uri_handler(httpServer, &wsUri);
+    // httpd_register_uri_handler(httpServer, &wsUri);
     httpd_register_uri_handler(httpServer, &sustainUri);
     httpd_register_uri_handler(httpServer, &checkUri);
     httpd_register_err_handler(httpServer, HTTPD_404_NOT_FOUND, customOrNotFoundHandler);

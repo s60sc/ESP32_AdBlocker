@@ -217,6 +217,7 @@ void runTaskStats(bool _onceOnly = false);
 void saveRamLog(const char* ramLogName);
 esp_err_t sendChunks(File df, httpd_req_t *req, bool endChunking = true);
 void sendSSE(const char* eventType, const char* eventData);
+extern char lastActionResult[160];
 void setFolderName(const char* fname, char* fileName, size_t fileNameSize);
 void setLamp(uint8_t lampLevel);
 void setPeripheralResponse(const byte pinNum, const uint32_t responseData);
