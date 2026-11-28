@@ -548,6 +548,11 @@ const char* failPageS_html = R"~(
         .then(logdata => { document.getElementById('appLog').innerText = logdata;})
         .catch(error => alert('Error fetching log:', error));
       }
+      function resetBlocklist() {
+        document.getElementById('appLog').innerText = 'Resetting blocklist URL to default and rebooting ESP32...';
+        fetch('/control?zLoad=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts').catch(() => {});
+        setTimeout(() => { window.location.href = '/'; }, 8000);
+      }
     </script>
   </head>
   <body>
@@ -557,8 +562,7 @@ const char* failPageS_html = R"~(
 const char* failPageE_html = R"~(
     </h2>
     <h3><a href="#" onclick="getLog(); return false;"><button class=styled-button>Check log</button></a></h3>
-    <h3><a href=/control?zLoad=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts><button class=styled-button>Reset Blocklist URL to Default</button></a></h3>
-    <h3><a href=/control?reset=1><button class=styled-button>Reboot ESP after fix</button></a></h3>
+    <h3><a href="#" onclick="resetBlocklist(); return false;"><button class=styled-button>Reset Blocklist URL to Default</button></a></h3>
     <h3><a href=/web?OTA.htm><button class=styled-button>OTA Update</button></a></h3>
     <div id="appLog"></div>
   </body>
