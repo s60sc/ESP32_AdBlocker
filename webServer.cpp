@@ -393,6 +393,7 @@ bool parseJson(int rxSize) {
   return retAction;
 }
 
+// NOTE: SSE is not used by ESP32_AdBlocker (all UI controls, stats, and logs use plain HTTP).
 static esp_err_t sseHandler(httpd_req_t *req) {
   if (!checkAuth(req)) return ESP_OK;
   if (sseMutex == NULL) sseMutex = xSemaphoreCreateMutex();
@@ -638,6 +639,7 @@ void wsAsyncSendBinary(uint8_t* data, size_t len) {
   } // else ignore
 }
 
+// NOTE: WebSocket (/ws) is not used by ESP32_AdBlocker (all UI controls, stats, and logs use plain HTTP).
 static esp_err_t wsHandler(httpd_req_t *req) {
   // receive websocket data and determine response
   // if a new connection is received, the old connection is closed, but the browser

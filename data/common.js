@@ -52,6 +52,7 @@
         }
 
         /*********** websocket and SSE functions ***********/
+        // NOTE: WebSocket (/ws) and SSE (/sse) are not used by ESP32_AdBlocker (disabled via doInitWebSocket/doInitSSE = false).
         
         function applyMessageData(msgData) {
           if (msgData instanceof ArrayBuffer) processBuffer(msgData); // app specific
